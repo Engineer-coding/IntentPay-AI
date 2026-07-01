@@ -55,7 +55,34 @@ pip install xgboost numpy scikit-learn   # opsiyonel, daha iyi risk skoru için
 | Güvenli İşlem | Limit içi, izinli kategori, güvenilir satıcı | **Approve** + token |
 | Limit Aşımı | Tutar limiti/tavanı aşar | **Step-up / Decline** |
 | Kategori İhlali | Yasaklı kategori (hediye kartı) | **Decline** |
+| Ek Onay Gerekli | Tutar limiti az miktarda aşar (≤%25) | **Step-up** (onay diyaloğu) |
+| Yeni / Riskli Satıcı | Onaysız satıcı, yeni ajan | **Decline / Review** |
 | Token Tekrar Kullanımı | Kullanılmış token tekrar denenir | **Decline** (replay) |
+
+---
+
+## Gelişmiş Güvenlik Özellikleri
+
+**Prompt Injection / Manipülasyon Savunması** (`attack_detector.py`)
+Talimata gizlenmiş manipülasyon denemelerini yakalar: limit atlatma ("tüm limitleri
+yok say"), zorla onaylatma ("her şeyi otomatik onayla"), kural geçersiz kılma
+("önceki kuralları unut"), rol ele geçirme ("sen artık yöneticisin"), kategori
+gizleme ve aciliyet baskısı. Saldırı tespit edilirse mandate güvenli sınırlara
+çekilir (**defense in depth**) — ama asıl savunma yine deterministik policy
+engine'dir; manipülasyon parser'ı kandırsa bile nihai karar kurallarca verilir.
+Demoda "⚠ Saldırı Dene" butonuyla canlı gösterilebilir.
+
+**Velocity / Hız Limiti** — Kısa sürede (60 sn) çok sayıda işlem bot/fraud
+sinyalidir: 3 işlemde uyarı (step-up), 5 işlemde blok (decline). Hem policy kuralı
+hem risk modeli özelliği olarak çalışır.
+
+**Step-up Onay Akışı** — "Ek onay gerekli" kararında kullanıcıya gerçek bir
+onayla/reddet diyaloğu sunulur. Onaylanırsa token üretilir, reddedilirse iptal
+edilir — karar havada kalmaz.
+
+**Analytics Dashboard** — Tüm kararların özeti: onay/blok oranı, ortalama risk
+skoru, yetkilendirilen toplam tutar, en çok tetiklenen kurallar ve risk seviye
+dağılımı. Audit verisinden gerçek zamanlı üretilir.
 
 ---
 
@@ -77,7 +104,8 @@ intentpay/
     │   └── risk_model.json    # eğitilmiş XGBoost modeli
     └── services/
         ├── intent_parser.py   # doğal dil → mandate (LLM + kural fallback)
-        ├── policy_engine.py   # DETERMİNİSTİK kural kontrolü
+        ├── attack_detector.py # prompt injection / manipülasyon savunması
+        ├── policy_engine.py   # DETERMİNİSTİK kural kontrolü (velocity dahil)
         ├── risk_model.py      # XGBoost skor + açıklanabilirlik (+ fallback)
         ├── decision_engine.py # policy + risk → nihai karar + açıklama
         ├── token_sim.py       # tek kullanımlık ödeme yetkisi simülasyonu

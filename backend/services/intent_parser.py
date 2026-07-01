@@ -79,7 +79,7 @@ def _parse_with_rules(text: str, user_id: str) -> Mandate:
         user_id=user_id,
         original_intent_text=text,
         max_amount=max_amount,
-        total_limit=max_amount,                    # MVP: per-tx limit = toplam tavan
+        total_limit=max_amount * 3,                # toplam tavan = işlem limitinin 3 katı
         currency="TRY",
         allowed_categories=allowed,
         blocked_categories=blocked,

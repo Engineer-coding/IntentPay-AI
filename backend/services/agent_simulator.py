@@ -22,31 +22,37 @@ _PRODUCTS = {p["product_id"]: p for p in get_products()}
 SCENARIOS = {
     "safe": {
         "label": "Güvenli İşlem",
-        "product_id": "p_chair",          # 3700 TL ofis sandalyesi
+        "product_id": "p_chair",          # 3.700 TL sandalye: mobilya, limit içi, onaylı satıcı
         "agent_id": "a_buyer",
-        "description": "Limit içinde, izinli kategori, güvenilir satıcı.",
+        "description": "Ofis sandalyesi · limit içinde, izinli kategori, onaylı satıcı.",
     },
     "over_limit": {
         "label": "Limit Aşımı",
-        "product_id": "p_chair_x",        # 6200 TL koltuk
+        "product_id": "p_sofa",           # 18.500 TL: mobilya (izinli) ama tutar limitini aşar
         "agent_id": "a_buyer",
-        "description": "İşlem tutarı kullanıcının belirlediği limiti aşıyor.",
+        "description": "Koltuk takımı · kategori izinli ama tutar 5.000 TL limitini büyük oranda aşıyor.",
     },
     "category_block": {
         "label": "Kategori İhlali",
-        "product_id": "p_giftcard",       # elektronik hediye kartı
+        "product_id": "p_laptop",         # elektronik = talimatta açıkça yasaklı
         "agent_id": "a_buyer",
-        "description": "Seçilen kategori mandate tarafından yasaklanmış.",
+        "description": "Dizüstü bilgisayar · 'elektronik alma' kuralıyla yasaklanan kategori.",
+    },
+    "stepup_approval": {
+        "label": "Ek Onay Gerekli",
+        "product_id": "p_chair_p",        # 5.900 TL: mobilya, limiti %18 aşar (≤%25 -> step-up)
+        "agent_id": "a_buyer",
+        "description": "Premium sandalye · izinli kategori, tutar limiti az miktarda aşıyor.",
     },
     "new_merchant": {
         "label": "Yeni / Riskli Satıcı",
-        "product_id": "p_laptop",         # onaylı ama yüksek tutar + yeni ajan
+        "product_id": "p_giftcard",       # onaysız satıcı (m_yenisatici) + yeni ajan
         "agent_id": "a_fresh",
-        "description": "Yeni oluşturulmuş ajan, yüksek tutarlı işlem deniyor.",
+        "description": "Onaysız satıcıdan alışveriş · 'yalnızca onaylı satıcı' kuralı ihlali.",
     },
     "token_reuse": {
         "label": "Token Tekrar Kullanımı",
-        "product_id": "p_chair",
+        "product_id": "p_chair",          # ilk onayla üretilen token replay edilir
         "agent_id": "a_buyer",
         "description": "Daha önce kullanılmış ödeme token'ı tekrar deneniyor (replay).",
     },

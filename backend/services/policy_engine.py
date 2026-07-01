@@ -29,6 +29,7 @@ def evaluate_policy(
     merchant: Merchant,
     agent: Agent,
     used_token_ids: set[str],
+    recent_tx_timestamps: list[int] | None = None,
 ) -> PolicyResult:
     passed: list[str] = []
     failed: list[dict] = []
@@ -134,6 +135,26 @@ def evaluate_policy(
                                    f"kullanıcı ek onayı gerekli."})
     else:
         passed.append("new_merchant_stepup")
+
+    # --- 11. velocity / hız limiti (kısa sürede çok işlem fraud sinyalidir) ---
+    VELOCITY_WINDOW_MS = 60_000        # 60 saniyelik pencere
+    VELOCITY_WARN = 3                   # bu kadar işlemde uyarı
+    VELOCITY_BLOCK = 5                  # bu kadar işlemde ihlal
+    if recent_tx_timestamps:
+        cutoff = now - VELOCITY_WINDOW_MS
+        recent_count = sum(1 for t in recent_tx_timestamps if t >= cutoff)
+        if recent_count >= VELOCITY_BLOCK:
+            failed.append({"rule": "velocity_limit",
+                           "reason": f"Hız limiti aşıldı: son 60 saniyede {recent_count} işlem "
+                                     f"(otomatik/bot davranışı şüphesi)."})
+        elif recent_count >= VELOCITY_WARN:
+            warnings.append({"rule": "velocity_limit",
+                             "reason": f"Yüksek işlem hızı: son 60 saniyede {recent_count} işlem. "
+                                       f"Ek doğrulama önerilir."})
+        else:
+            passed.append("velocity_limit")
+    else:
+        passed.append("velocity_limit")
 
     # --- nihai ön karar ---
     if failed:

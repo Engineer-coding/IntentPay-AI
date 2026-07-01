@@ -37,6 +37,7 @@ from services.decision_engine import decide
 from services.token_sim import TokenStore
 from services.audit_log import AuditTrail
 from services.agent_simulator import build_request, list_scenarios
+from services.attack_detector import scan_text, sanitize_mandate
 
 
 # --------------------------------------------------------------------------- #
@@ -53,6 +54,8 @@ class AppState:
         self.tokens = TokenStore()
         self.audit = AuditTrail()
         self.last_issued_token_id: str | None = None
+        self.tx_timestamps: list[int] = []          # velocity takibi için
+        self.pending_stepups: dict[str, dict] = {}  # step-up onayı bekleyen işlemler
 
     def active_mandate_for(self, user_id: str) -> Mandate | None:
         for m in self.mandates.values():
@@ -92,8 +95,14 @@ def evaluate_transaction(tx_dict: dict) -> dict:
     # --- token reuse tespiti ---
     token_already_used = bool(tx.reused_token_id and STATE.tokens.is_used(tx.reused_token_id))
 
+    # --- velocity: bu işlemden önceki son 60sn işlem sayısı ---
+    now = now_ms()
+    velocity_count = sum(1 for t in STATE.tx_timestamps if t >= now - 60_000)
+    STATE.tx_timestamps.append(now)
+
     # --- 1. Policy Engine ---
-    policy = evaluate_policy(tx, mandate, merchant, agent, STATE.tokens.used_ids())
+    policy = evaluate_policy(tx, mandate, merchant, agent, STATE.tokens.used_ids(),
+                             recent_tx_timestamps=STATE.tx_timestamps[:-1])
     STATE.audit.record(tx.transaction_id, "policy_evaluation", {
         "preliminary_decision": policy.preliminary_decision,
         "passed": policy.passed_rules,
@@ -106,6 +115,7 @@ def evaluate_transaction(tx_dict: dict) -> dict:
         tx, mandate, merchant, agent, user,
         policy_failed_count=len(policy.failed_rules),
         token_already_used=token_already_used,
+        velocity_count=velocity_count,
     )
     risk = score_transaction(feats, tx.transaction_id)
     STATE.audit.record(tx.transaction_id, "risk_scoring", {
@@ -131,6 +141,9 @@ def evaluate_transaction(tx_dict: dict) -> dict:
         token_dict = asdict(token)
         decision.token = token_dict
         STATE.audit.record(tx.transaction_id, "token_issued", token_dict)
+    elif decision.final_decision == "step-up":
+        # Step-up: işlem kullanıcı onayı bekler (pending). Token henüz üretilmez.
+        STATE.pending_stepups[tx.transaction_id] = {"amount": tx.amount}
 
     # --- 5. Decision audit ---
     STATE.audit.record(tx.transaction_id, "decision", {
@@ -149,6 +162,8 @@ def evaluate_transaction(tx_dict: dict) -> dict:
         "explanation": decision.explanation,
         "explanation_factors": decision.explanation_factors,
         "token": token_dict,
+        "velocity_count": velocity_count,
+        "needs_stepup": decision.final_decision == "step-up",
         "mandate_spent": mandate.spent_so_far,
         "mandate_total_limit": mandate.total_limit,
     }
@@ -191,6 +206,8 @@ class Handler(BaseHTTPRequestHandler):
                              "raw": STATE.audit.all()})
         elif path == "/api/tokens":
             self._send(200, {"tokens": STATE.tokens.all()})
+        elif path == "/api/analytics":
+            self._send(200, self._analytics())
         elif path.startswith("/api/"):
             self._send(404, {"error": "not found"})
         else:
@@ -227,6 +244,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, self._agent_request(body))
             elif path == "/api/transaction/evaluate":
                 self._send(200, evaluate_transaction(body["transaction"]))
+            elif path == "/api/security/scan":
+                self._send(200, scan_text(body.get("text", "")))
+            elif path == "/api/stepup/resolve":
+                self._send(200, self._resolve_stepup(body))
             else:
                 self._send(404, {"error": "not found"})
         except Exception as e:
@@ -251,11 +272,21 @@ class Handler(BaseHTTPRequestHandler):
     def _parse(self, body: dict) -> dict:
         text = body.get("text", "")
         user_id = body.get("user_id", DEFAULT_USER)
+
+        # --- güvenlik taraması: talimata gizlenmiş manipülasyon var mı? ---
+        scan = scan_text(text)
+
         result = parse_intent(text, user_id)
-        mandate = Mandate(**result["mandate"])
+        # saldırı tespit edilirse mandate güvenli sınırlara çekilir (defense in depth)
+        result["mandate"] = sanitize_mandate(result["mandate"], scan)
+        result["security_scan"] = scan
+
+        mandate = Mandate(**{k: v for k, v in result["mandate"].items()
+                             if not k.startswith("_")})
         STATE.mandates[mandate.mandate_id] = mandate
         STATE.audit.record("mandate:" + mandate.mandate_id, "intent_parsed", {
             "original_intent": text, "parse_mode": result["parse_mode"],
+            "security_scan": scan,
             "mandate": result["mandate"],
         })
         return result
@@ -281,6 +312,109 @@ class Handler(BaseHTTPRequestHandler):
         user_id = body.get("user_id", DEFAULT_USER)
         reuse = STATE.last_issued_token_id if scenario == "token_reuse" else None
         return build_request(scenario, user_id, reused_token_id=reuse)
+
+    def _resolve_stepup(self, body: dict) -> dict:
+        """Step-up kararındaki bir işlemi kullanıcı onayı/reddi ile sonuçlandırır."""
+        tx_id = body.get("transaction_id")
+        approved = body.get("approved", False)
+        pending = STATE.pending_stepups.get(tx_id)
+        if not pending:
+            return {"error": "Bekleyen step-up işlemi bulunamadı."}
+
+        if not approved:
+            STATE.audit.record(tx_id, "stepup_resolved", {
+                "resolution": "rejected",
+                "final_decision": "decline",
+                "explanation": "Kullanıcı ek onayı reddetti; işlem iptal edildi.",
+            })
+            STATE.audit.record(tx_id, "decision", {
+                "final_decision": "decline",
+                "explanation": "Kullanıcı ek onayı reddetti; işlem iptal edildi.",
+            })
+            del STATE.pending_stepups[tx_id]
+            return {"final_decision": "decline",
+                    "explanation": "Kullanıcı ek onayı reddetti; işlem iptal edildi."}
+
+        # onaylandı -> token üret
+        tx = STATE.transactions[tx_id]
+        mandate = STATE.active_mandate_for(tx.user_id)
+        merchant = STATE.merchants.get(tx.merchant_id)
+        token = STATE.tokens.issue(tx, mandate, merchant)
+        STATE.last_issued_token_id = token.token_id
+        mandate.spent_so_far += tx.amount
+        STATE.tokens.redeem(token.token_id)
+        from dataclasses import asdict
+        token_dict = asdict(token)
+        STATE.audit.record(tx_id, "stepup_resolved", {
+            "resolution": "approved",
+            "final_decision": "approve",
+            "explanation": "Kullanıcı ek onayı verdi; işlem onaylandı.",
+        })
+        STATE.audit.record(tx_id, "token_issued", token_dict)
+        STATE.audit.record(tx_id, "decision", {
+            "final_decision": "approve",
+            "explanation": "Kullanıcı ek onayı verdi; işlem onaylandı.",
+        })
+        del STATE.pending_stepups[tx_id]
+        return {"final_decision": "approve", "token": token_dict,
+                "explanation": "Kullanıcı ek onayı verdi; işlem onaylandı."}
+
+    def _analytics(self) -> dict:
+        """Audit verisinden karar/risk/kural istatistikleri üretir."""
+        txns = STATE.audit.grouped_by_transaction()
+        decisions = {"approve": 0, "step-up": 0, "review": 0, "decline": 0}
+        rule_hits: dict[str, int] = {}
+        risk_buckets = {"low": 0, "medium": 0, "high": 0}
+        risk_scores: list[float] = []
+        total_authorized = 0.0
+
+        for it in txns:
+            fd = it.get("final_decision")
+            if fd in decisions:
+                decisions[fd] += 1
+            for ev in it.get("events", []):
+                d = ev.get("details", {})
+                if ev["event_type"] == "policy_evaluation":
+                    for f in d.get("failed", []):
+                        r = f.get("rule", "?")
+                        rule_hits[r] = rule_hits.get(r, 0) + 1
+                    for w in d.get("warnings", []):
+                        r = w.get("rule", "?")
+                        rule_hits[r] = rule_hits.get(r, 0) + 1
+                elif ev["event_type"] == "risk_scoring":
+                    lvl = d.get("risk_level")
+                    if lvl in risk_buckets:
+                        risk_buckets[lvl] += 1
+                    if isinstance(d.get("risk_score"), (int, float)):
+                        risk_scores.append(d["risk_score"])
+                elif ev["event_type"] == "token_issued":
+                    total_authorized += d.get("max_amount", 0)
+
+        total = sum(decisions.values())
+        approve_rate = (decisions["approve"] / total * 100) if total else 0
+        block_rate = (decisions["decline"] / total * 100) if total else 0
+        avg_risk = (sum(risk_scores) / len(risk_scores)) if risk_scores else 0
+
+        top_rules = sorted(rule_hits.items(), key=lambda x: -x[1])
+        RULE_TR = {
+            "mandate_status": "Mandate durumu", "validity_date": "Geçerlilik süresi",
+            "agent_authorization": "Ajan yetkisi", "token_reuse": "Token tekrar kullanımı",
+            "blocked_category": "Yasaklı kategori", "allowed_category": "İzinli kategori",
+            "amount_limit": "Tutar limiti", "total_spending_limit": "Toplam harcama tavanı",
+            "merchant_approval": "Satıcı onayı", "new_merchant_stepup": "Yeni satıcı kontrolü",
+            "velocity_limit": "Hız limiti (velocity)",
+        }
+        return {
+            "total_transactions": total,
+            "decisions": decisions,
+            "approve_rate": round(approve_rate, 1),
+            "block_rate": round(block_rate, 1),
+            "avg_risk": round(avg_risk, 3),
+            "risk_buckets": risk_buckets,
+            "total_authorized": total_authorized,
+            "top_rules": [{"rule": r, "label": RULE_TR.get(r, r), "count": c}
+                          for r, c in top_rules],
+        }
 
 
 def main():

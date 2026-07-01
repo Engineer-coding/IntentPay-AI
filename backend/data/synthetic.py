@@ -21,7 +21,8 @@ SEED = 42
 PRODUCTS = [
     # id,            name,                     category,           price,  merchant_key
     ("p_chair",   "Ergonomik Ofis Sandalyesi", "office_furniture",  3700, "m_ofisplus"),
-    ("p_chair_x", "Yönetici Deri Koltuğu",     "office_furniture",  6200, "m_ofisplus"),
+    ("p_chair_p", "Premium Ofis Sandalyesi",   "office_furniture",  5900, "m_ofisplus"),
+    ("p_sofa",    "Ofis Bekleme Koltuğu Takımı","office_furniture", 18500, "m_ofisplus"),
     ("p_desk",    "Ayarlanabilir Ofis Masası", "office_furniture",  4500, "m_ofisplus"),
     ("p_paper",   "A4 Fotokopi Kağıdı (5 koli)","office_supplies",    850, "m_kirtasiye"),
     ("p_pens",    "Kalem & Defter Seti",       "office_supplies",    320, "m_kirtasiye"),

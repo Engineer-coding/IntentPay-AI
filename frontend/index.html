@@ -308,6 +308,80 @@ textarea::placeholder{color:var(--ghost)}
 .notice .i{color:var(--amber);flex:none}
 .foot{text-align:center;margin-top:50px;color:var(--ghost);font-size:12px;
   font-family:var(--mono);letter-spacing:.03em}
+
+/* ---- saldırı örneği chip ---- */
+.chip-attack{color:var(--decline);border-color:#4a1f24;background:var(--decline-bg)}
+.chip-attack:hover{border-color:var(--decline);color:#ffb4b4}
+
+/* ---- güvenlik bannerı ---- */
+.sec-banner{display:flex;gap:14px;align-items:flex-start;border-radius:var(--r-sm);
+  padding:16px 18px;margin-bottom:18px;border:1px solid}
+.sec-banner.safe{background:var(--approve-bg);border-color:#1c4a3a}
+.sec-banner.threat{background:var(--decline-bg);border-color:#4a1f24}
+.sec-ico{font-size:22px;flex:none;line-height:1.2}
+.sec-banner.safe .sec-ico{color:var(--approve)}
+.sec-banner.threat .sec-ico{color:var(--decline)}
+.sec-title{font-family:var(--display);font-weight:600;font-size:15px;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sec-banner.safe .sec-title{color:var(--approve)}
+.sec-banner.threat .sec-title{color:var(--decline)}
+.sec-level{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;
+  background:#371519;color:var(--decline);border:1px solid #4a1f24;
+  padding:3px 8px;border-radius:5px}
+.sec-sub{font-size:13px;color:var(--text);opacity:.9;margin-top:4px;line-height:1.5}
+.sec-detections{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+.sec-det{display:flex;gap:10px;align-items:center;background:#1a0e10;
+  border:1px solid #3a1d20;border-radius:7px;padding:8px 11px}
+.sec-det-label{font-size:12px;font-weight:500;color:#ffb4b4;flex:none}
+.sec-det-match{font-family:var(--mono);font-size:11.5px;color:var(--mist);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sec-defense{font-size:12px;color:var(--mist);margin-top:12px;line-height:1.55;
+  border-top:1px solid #3a1d20;padding-top:11px}
+
+/* ---- step-up onay diyaloğu ---- */
+.stepup-dialog{margin-top:20px;background:var(--stepup-bg);border:1px solid #4a3c12;
+  border-radius:var(--r-sm);padding:18px}
+.stepup-q{display:flex;gap:13px;align-items:flex-start}
+.stepup-ico{width:30px;height:30px;border-radius:8px;background:#33290e;
+  color:var(--stepup);display:grid;place-items:center;font-family:var(--mono);
+  font-weight:700;font-size:17px;flex:none}
+.stepup-result{margin-top:20px;border-radius:var(--r-sm);padding:16px 18px;
+  display:flex;gap:13px;align-items:flex-start;border:1px solid}
+.stepup-result.ok{background:var(--approve-bg);border-color:#1c4a3a;color:var(--approve)}
+.stepup-result.bad{background:var(--decline-bg);border-color:#4a1f24;color:var(--decline)}
+.stepup-result>span{font-size:22px;font-family:var(--mono);flex:none}
+.stepup-result b{font-family:var(--display)}
+
+/* ---- analytics dashboard ---- */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:8px}
+@media(max-width:720px){.kpi-grid{grid-template-columns:1fr 1fr}}
+.kpi{background:var(--ink);border:1px solid var(--line-soft);border-radius:var(--r-sm);
+  padding:18px 16px;text-align:center}
+.kpi-v{font-family:var(--mono);font-size:26px;font-weight:700;line-height:1}
+.kpi-l{font-size:11px;color:var(--mist);margin-top:8px;font-family:var(--mono);
+  letter-spacing:.04em;text-transform:uppercase}
+.an-section{margin-top:24px}
+.an-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--ghost);
+  text-transform:uppercase;margin-bottom:14px}
+.an-bars{display:flex;flex-direction:column;gap:10px}
+.an-bar-row{display:flex;align-items:center;gap:14px}
+.an-bar-label{width:80px;font-size:13px;color:var(--mist);flex:none}
+.an-bar-track{flex:1;height:24px;background:var(--ink-3);border-radius:6px;overflow:hidden}
+.an-bar-fill{height:100%;border-radius:6px;transition:width .8s cubic-bezier(.2,.7,.2,1);
+  min-width:6px}
+.an-bar-val{width:34px;text-align:right;font-size:13px;color:var(--text);flex:none}
+.risk-dist{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.rd-cell{background:var(--ink);border:1px solid var(--line-soft);border-radius:var(--r-sm);
+  padding:18px;text-align:center;display:flex;flex-direction:column;gap:6px}
+.rd-n{font-family:var(--mono);font-size:28px;font-weight:700;line-height:1}
+.rd-l{font-size:11px;color:var(--mist);font-family:var(--mono);text-transform:uppercase;
+  letter-spacing:.05em}
+
+/* ---- velocity note ---- */
+.velocity-note{display:flex;gap:11px;align-items:center;margin-top:16px;
+  background:var(--stepup-bg);border:1px solid #4a3c12;border-radius:var(--r-sm);
+  padding:13px 16px;font-size:13px;color:var(--text)}
+.vn-ico{font-size:18px;flex:none}
 .agent-line{display:flex;align-items:center;gap:12px;background:var(--ink);
   border:1px solid var(--line-soft);border-radius:var(--r-sm);padding:14px 16px;margin-bottom:8px}
 .agent-line .av{width:32px;height:32px;border-radius:8px;background:var(--ink-3);

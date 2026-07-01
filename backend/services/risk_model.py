@@ -53,6 +53,7 @@ def feature_vector(
     user: User,
     policy_failed_count: int,
     token_already_used: bool,
+    velocity_count: int = 0,
 ) -> dict[str, float]:
     avg = user.average_transaction_amount or 1.0
     return {
@@ -61,7 +62,7 @@ def feature_vector(
         "is_new_merchant":   0.0 if merchant.is_approved else 1.0,
         "category_mismatch": 1.0 if (mandate.allowed_categories
                                      and tx.category not in mandate.allowed_categories) else 0.0,
-        "attempt_count":     0.0,
+        "attempt_count":     float(velocity_count),
         "odd_hour":          0.0,
         "young_agent":       1.0 if agent.age_days < 7 else 0.0,
         "prior_failure":     0.0,
