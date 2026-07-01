@@ -127,6 +127,8 @@ class Token:
     valid_until: int
     single_use: bool = True
     status: str = "active"               # active | used | expired | revoked
+    signature: str = ""                  # HMAC imzası (kriptografik bütünlük)
+    issued_at: int = 0
 
 
 @dataclass

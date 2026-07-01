@@ -12,11 +12,23 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from models.schema import AuditLog, _id, now_ms
+from services import persistence
 
 
 class AuditTrail:
     def __init__(self) -> None:
         self._logs: list[AuditLog] = []
+
+    def load(self, rows: list[dict]) -> None:
+        """Diskten audit olaylarını geri yükler (sunucu açılışı)."""
+        for r in rows:
+            self._logs.append(AuditLog(
+                log_id=r["log_id"],
+                transaction_id=r["transaction_id"],
+                event_type=r["event_type"],
+                details=r["details"],
+                timestamp=r["timestamp"],
+            ))
 
     def record(self, transaction_id: str, event_type: str, details: dict) -> AuditLog:
         log = AuditLog(
@@ -27,6 +39,7 @@ class AuditTrail:
             timestamp=now_ms(),
         )
         self._logs.append(log)
+        persistence.save_audit(log.log_id, transaction_id, event_type, details, log.timestamp)
         return log
 
     def for_transaction(self, transaction_id: str) -> list[dict]:

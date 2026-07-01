@@ -41,6 +41,19 @@ _WEIGHTS = {
 _xgb_model = None
 _xgb_importance: dict[str, float] | None = None
 
+# Ayarlanabilir risk eşikleri (kullanıcı toleransı). Varsayılan: balanced.
+_THRESHOLDS = {"step": 0.40, "review": 0.70, "decline": 0.85}
+
+
+def set_thresholds(t: dict) -> None:
+    """Risk karar eşiklerini günceller (strict/balanced/lenient profilleri)."""
+    global _THRESHOLDS
+    _THRESHOLDS = {"step": t["step"], "review": t["review"], "decline": t["decline"]}
+
+
+def get_thresholds() -> dict:
+    return dict(_THRESHOLDS)
+
 
 # --------------------------------------------------------------------------- #
 #  Feature extraction
@@ -104,13 +117,14 @@ def score_transaction(features: dict[str, float], transaction_id: str) -> RiskRe
         score, mode = _score_heuristic(features), "heuristic"
 
     score = max(0.0, min(1.0, score))
-    level = "high" if score >= 0.7 else "medium" if score >= 0.4 else "low"
+    th = _THRESHOLDS
+    level = "high" if score >= th["review"] else "medium" if score >= th["step"] else "low"
 
-    if score >= 0.85:
+    if score >= th["decline"]:
         action = "decline"
-    elif score >= 0.7:
+    elif score >= th["review"]:
         action = "review"
-    elif score >= 0.4:
+    elif score >= th["step"]:
         action = "step-up"
     else:
         action = "approve"

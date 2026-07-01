@@ -43,11 +43,18 @@ function App(){
   const [securityScan, setSecurityScan] = useState(null);   // mandate parse güvenlik taraması
   const [analytics, setAnalytics] = useState(null);          // dashboard verisi
   const [stepupResolved, setStepupResolved] = useState(null);// step-up onay sonucu
+  const [riskProfile, setRiskProfile] = useState("balanced");// risk tolerans profili
+  const [persist, setPersist] = useState(null);              // SQLite durum bilgisi
   const resultRef = useRef(null);
 
   useEffect(()=>{
     fetch(`${API}/api/bootstrap`).then(r=>r.json()).then(setBoot).catch(()=>setBoot("err"));
+    refreshPersist();
   },[]);
+
+  const refreshPersist = () => {
+    fetch(`${API}/api/persistence`).then(r=>r.json()).then(setPersist).catch(()=>{});
+  };
 
   const parse = async () => {
     if(!intentText.trim()) return;
@@ -107,6 +114,7 @@ function App(){
     setPipeline(p=>({...p, decision:dmap[ev.final_decision]||"ok"}));
     setEvalResult({...ev, _scenario:ar.scenario_label, _product:ar.product});
     setRunning(false); setStep(5);
+    refreshPersist();
     setTimeout(()=>resultRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),120);
   };
 
@@ -131,12 +139,20 @@ function App(){
     setTimeout(()=>document.getElementById("analytics")?.scrollIntoView({behavior:"smooth"}),100);
   };
 
+  const setRiskProfileAndApply = async (profile) => {
+    setRiskProfile(profile);
+    await fetch(`${API}/api/risk/threshold`,{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({profile})
+    });
+  };
+
   if(boot===null) return <Splash/>;
   if(boot==="err") return <BackendDown/>;
 
   return (
     <div>
-      <TopBar llm={llmAvailable}/>
+      <TopBar llm={llmAvailable} persist={persist}/>
       <div className="shell">
         <Stepper step={step}/>
 
@@ -199,6 +215,7 @@ function App(){
                    title="Bir satın alma senaryosu çalıştırın"
                    sub="Ajan ürün seçer ve ödeme isteği oluşturur. Her senaryo farklı bir risk durumu gösterir.">
               <AgentRoster agents={boot.agents}/>
+              <RiskProfileSelector value={riskProfile} onChange={setRiskProfileAndApply}/>
               <div className="scn-grid" style={{marginTop:16}}>
                 {boot.scenarios.map(s=>(
                   <button key={s.key} className="scn" disabled={running}
@@ -263,7 +280,7 @@ function App(){
 const wait = ms => new Promise(r=>setTimeout(r,ms));
 
 /* ---------- sub-components ---------- */
-function TopBar({llm}){
+function TopBar({llm, persist}){
   return (
     <div className="topbar">
       <div className="topbar-inner">
@@ -275,6 +292,12 @@ function TopBar({llm}){
           </div>
         </div>
         <div className="spacer"/>
+        {persist && (
+          <div className="mode-pill" title={persist.db_path}>
+            <span className="dot"/>
+            SQLite · {persist.audit_events} olay
+          </div>
+        )}
         <div className="mode-pill">
           <span className={"dot "+(llm?"":"off")}/>
           {llm ? "LLM Parser" : "Rule Parser"}
@@ -372,6 +395,32 @@ function AgentRoster({agents}){
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function RiskProfileSelector({value, onChange}){
+  const profiles = [
+    {key:"strict",   label:"Katı",      desc:"Düşük tolerans · agresif ret"},
+    {key:"balanced", label:"Dengeli",   desc:"Varsayılan eşikler"},
+    {key:"lenient",  label:"Gevşek",    desc:"Yüksek tolerans · esnek"},
+  ];
+  return (
+    <div className="risk-profile">
+      <div className="rp-h">
+        <span className="rp-title">Risk Toleransı</span>
+        <span className="rp-sub">Eşikleri ayarlayın — aynı işlem farklı profilde farklı karar alır</span>
+      </div>
+      <div className="rp-opts">
+        {profiles.map(p=>(
+          <button key={p.key}
+                  className={"rp-opt "+(value===p.key?"active":"")}
+                  onClick={()=>onChange(p.key)}>
+            <div className="rp-lab">{p.label}</div>
+            <div className="rp-desc">{p.desc}</div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -478,8 +527,24 @@ function RiskCard({risk}){
 }
 
 function TokenCard({t}){
+  const [tamper, setTamper] = useState(null);
+  const [busy, setBusy] = useState(false);
   const valid = new Date(t.valid_until).toLocaleString("tr-TR",{
     day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"});
+  const sig = t.signature || "";
+  const sigShort = sig ? sig.slice(0,16)+"…"+sig.slice(-8) : "—";
+
+  const runTamper = async () => {
+    setBusy(true);
+    try{
+      const r = await fetch(`${API}/api/token/tamper`,{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({token_id:t.token_id, new_amount:999999})
+      }).then(x=>x.json());
+      setTamper(r);
+    }finally{ setBusy(false); }
+  };
+
   return (
     <div className="token fade-in">
       <div className="t-h">
@@ -494,6 +559,26 @@ function TokenCard({t}){
         <div className="t-cell"><div className="tk">Geçerli (—)</div><div className="tv">{valid}</div></div>
         <div className="t-cell"><div className="tk">Kullanım</div><div className="tv">{t.single_use?"Tek kullanımlık":"Çoklu"}</div></div>
         <div className="t-cell"><div className="tk">Ajan</div><div className="tv">{t.agent_id}</div></div>
+      </div>
+      <div className="t-sig">
+        <span className="tk">⚿ HMAC-SHA256 İmza</span>
+        <span className="t-sig-val mono">{sigShort}</span>
+      </div>
+      <div className="t-tamper">
+        {!tamper ? (
+          <button className="btn btn-ghost btn-sm" onClick={runTamper} disabled={busy}>
+            {busy ? <><span className="spin"></span> Test ediliyor</> : "⚠ İmzayı Kurcala (güvenlik testi)"}
+          </button>
+        ) : (
+          <div className={"tamper-result "+(tamper.redeem_blocked?"ok":"bad")}>
+            <b>{tamper.redeem_blocked ? "✓ Kurcalama engellendi" : "✗ Kurcalama geçti!"}</b>
+            <div className="muted" style={{fontSize:12,marginTop:4,lineHeight:1.5}}>
+              Tutar {fmtTL(tamper.original_amount)} → {fmtTL(tamper.tampered_amount)} olarak değiştirildi.
+              İmza doğrulaması: kurcalama öncesi <b style={{color:"var(--approve)"}}>geçerli</b>,
+              sonrası <b style={{color:"var(--decline)"}}>geçersiz</b>. {tamper.reason}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

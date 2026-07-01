@@ -86,6 +86,30 @@ dağılımı. Audit verisinden gerçek zamanlı üretilir.
 
 ---
 
+## Dayanıklılık & Mühendislik Sağlamlığı
+
+**Kalıcılık (SQLite)** — Mandate, işlem, token ve audit kayıtları diske yazılır
+(`backend/data/intentpay.db`). Sunucu yeniden başlasa bile tüm durum geri yüklenir;
+restore edilen token'ların kriptografik imzası dahi korunur. Topbar'da canlı kayıt
+sayacı görünür.
+
+**Kriptografik Token İmzası (HMAC-SHA256)** — Her token; id, tutar, kategori, satıcı
+ve süre alanları üzerinden imzalanır. Token kurcalanırsa (ör. tutar değiştirilirse)
+imza doğrulaması çöker ve redeem reddedilir. Token kartındaki "İmzayı Kurcala"
+butonu bu savunmayı canlı gösterir.
+
+**Ayarlanabilir Risk Toleransı** — Katı / Dengeli / Gevşek profilleri risk karar
+eşiklerini canlı değiştirir; aynı işlem farklı profilde farklı karar alabilir.
+
+**Otomatik Test Paketi** — `python backend/run_tests.py` ile 19 test (sıfır bağımlılık)
+tüm kritik akışları sınar: policy, risk, token imzası, replay, velocity, step-up,
+saldırı tespiti, kalıcılık, hata yönetimi. Demo'da "hepsi yeşil" göstergesi.
+
+**Hata Yönetimi** — Boş/aşırı uzun talimat, bilinmeyen kullanıcı/senaryo, çift
+onaylama gibi uç durumlar zarifçe ele alınır; backend asla beklenmedik 500 vermez.
+
+---
+
 ## Mimari — Modüler Bileşenler
 
 ```
@@ -97,6 +121,7 @@ intentpay/
 └── backend/
     ├── server.py              # HTTP API + statik servis (orkestratör)
     ├── train_risk_model.py    # XGBoost eğitimi
+    ├── run_tests.py           # otomatik test paketi (19 test, sıfır bağımlılık)
     ├── models/
     │   └── schema.py          # tüm veri modelleri (dataclass)
     ├── data/
@@ -108,8 +133,9 @@ intentpay/
         ├── policy_engine.py   # DETERMİNİSTİK kural kontrolü (velocity dahil)
         ├── risk_model.py      # XGBoost skor + açıklanabilirlik (+ fallback)
         ├── decision_engine.py # policy + risk → nihai karar + açıklama
-        ├── token_sim.py       # tek kullanımlık ödeme yetkisi simülasyonu
-        ├── audit_log.py       # denetlenebilir kayıt zinciri
+        ├── token_sim.py       # HMAC imzalı tek kullanımlık ödeme yetkisi
+        ├── audit_log.py       # denetlenebilir kayıt zinciri (kalıcı)
+        ├── persistence.py     # SQLite kalıcılık katmanı
         └── agent_simulator.py # AI ajan + risk senaryoları
 ```
 

@@ -38,10 +38,11 @@ from services.token_sim import TokenStore
 from services.audit_log import AuditTrail
 from services.agent_simulator import build_request, list_scenarios
 from services.attack_detector import scan_text, sanitize_mandate
+from services import persistence
 
 
 # --------------------------------------------------------------------------- #
-#  In-memory application state
+#  In-memory application state (SQLite ile kalıcı)
 # --------------------------------------------------------------------------- #
 class AppState:
     def __init__(self) -> None:
@@ -56,6 +57,23 @@ class AppState:
         self.last_issued_token_id: str | None = None
         self.tx_timestamps: list[int] = []          # velocity takibi için
         self.pending_stepups: dict[str, dict] = {}  # step-up onayı bekleyen işlemler
+
+    def restore(self) -> None:
+        """Sunucu açılışında kalıcı durumu diskten geri yükler."""
+        data = persistence.load_all()
+        for m in data["mandates"]:
+            try:
+                self.mandates[m["mandate_id"]] = Mandate(
+                    **{k: v for k, v in m["data"].items() if not k.startswith("_")})
+            except Exception:
+                pass
+        for t in data["transactions"]:
+            try:
+                self.transactions[t["transaction_id"]] = TransactionRequest(**t["data"])
+            except Exception:
+                pass
+        self.tokens.load(data["tokens"])
+        self.audit.load(data["audit"])
 
     def active_mandate_for(self, user_id: str) -> Mandate | None:
         for m in self.mandates.values():
@@ -74,6 +92,8 @@ DEFAULT_USER = "u_acme"
 def evaluate_transaction(tx_dict: dict) -> dict:
     tx = TransactionRequest(**tx_dict)
     STATE.transactions[tx.transaction_id] = tx
+    persistence.save_transaction(tx.transaction_id, tx.user_id, tx.__dict__,
+                                 tx.status, now_ms())
 
     user = STATE.users[tx.user_id]
     agent = STATE.agents.get(tx.agent_id)
@@ -208,6 +228,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"tokens": STATE.tokens.all()})
         elif path == "/api/analytics":
             self._send(200, self._analytics())
+        elif path == "/api/persistence":
+            self._send(200, persistence.stats())
         elif path.startswith("/api/"):
             self._send(404, {"error": "not found"})
         else:
@@ -248,6 +270,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, scan_text(body.get("text", "")))
             elif path == "/api/stepup/resolve":
                 self._send(200, self._resolve_stepup(body))
+            elif path == "/api/token/tamper":
+                self._send(200, self._tamper_token(body))
+            elif path == "/api/risk/threshold":
+                self._send(200, self._set_threshold(body))
             else:
                 self._send(404, {"error": "not found"})
         except Exception as e:
@@ -270,8 +296,16 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def _parse(self, body: dict) -> dict:
-        text = body.get("text", "")
+        text = (body.get("text") or "").strip()
         user_id = body.get("user_id", DEFAULT_USER)
+
+        # --- giriş doğrulama (uç durum savunması) ---
+        if not text:
+            return {"error": "Talimat metni boş olamaz."}
+        if len(text) > 2000:
+            return {"error": "Talimat çok uzun (en fazla 2000 karakter)."}
+        if user_id not in STATE.users:
+            return {"error": f"Bilinmeyen kullanıcı: {user_id}"}
 
         # --- güvenlik taraması: talimata gizlenmiş manipülasyon var mı? ---
         scan = scan_text(text)
@@ -284,6 +318,8 @@ class Handler(BaseHTTPRequestHandler):
         mandate = Mandate(**{k: v for k, v in result["mandate"].items()
                              if not k.startswith("_")})
         STATE.mandates[mandate.mandate_id] = mandate
+        persistence.save_mandate(mandate.mandate_id, mandate.user_id,
+                                 mandate.to_dict(), mandate.status, now_ms())
         STATE.audit.record("mandate:" + mandate.mandate_id, "intent_parsed", {
             "original_intent": text, "parse_mode": result["parse_mode"],
             "security_scan": scan,
@@ -296,11 +332,19 @@ class Handler(BaseHTTPRequestHandler):
         mandate = STATE.mandates.get(mandate_id)
         if not mandate:
             return {"error": "Mandate bulunamadı."}
+        if mandate.status == "active":
+            from dataclasses import asdict
+            return {"mandate": asdict(mandate), "status": "active",
+                    "note": "Mandate zaten aktif."}
         # aynı kullanıcının diğer aktif mandate'lerini pasifleştir (tek aktif)
         for m in STATE.mandates.values():
             if m.user_id == mandate.user_id and m.status == "active":
                 m.status = "revoked"
+                persistence.save_mandate(m.mandate_id, m.user_id, m.to_dict(),
+                                         m.status, now_ms())
         mandate.status = "active"
+        persistence.save_mandate(mandate.mandate_id, mandate.user_id,
+                                 mandate.to_dict(), mandate.status, now_ms())
         STATE.audit.record("mandate:" + mandate.mandate_id, "mandate_approved", {
             "approved_at": now_ms(), "mandate_id": mandate.mandate_id,
         })
@@ -310,8 +354,43 @@ class Handler(BaseHTTPRequestHandler):
     def _agent_request(self, body: dict) -> dict:
         scenario = body.get("scenario", "safe")
         user_id = body.get("user_id", DEFAULT_USER)
+        if scenario not in [s["key"] for s in list_scenarios()]:
+            return {"error": f"Bilinmeyen senaryo: {scenario}"}
         reuse = STATE.last_issued_token_id if scenario == "token_reuse" else None
         return build_request(scenario, user_id, reused_token_id=reuse)
+
+    def _tamper_token(self, body: dict) -> dict:
+        """DEMO: bir token'ı kurcalayıp HMAC imza doğrulamasının çöktüğünü gösterir."""
+        token_id = body.get("token_id") or STATE.last_issued_token_id
+        if not token_id:
+            return {"error": "Kurcalanacak token yok. Önce onaylı bir işlem çalıştırın."}
+        new_amount = float(body.get("new_amount", 999999))
+        result = STATE.tokens.tamper_test(token_id, new_amount)
+        if result.get("ok"):
+            STATE.audit.record(
+                STATE.tokens.get(token_id).transaction_id if STATE.tokens.get(token_id) else "tamper",
+                "token_tamper_test", {
+                    "token_id": token_id,
+                    "original_amount": result["original_amount"],
+                    "tampered_amount": result["tampered_amount"],
+                    "signature_valid_after_tamper": result["valid_after"],
+                    "redeem_blocked": result["redeem_blocked"],
+                })
+        return result
+
+    def _set_threshold(self, body: dict) -> dict:
+        """Risk toleransını ayarlar: strict / balanced / lenient."""
+        import services.risk_model as rm
+        profile = body.get("profile", "balanced")
+        presets = {
+            "strict":   {"step": 0.30, "review": 0.55, "decline": 0.70},
+            "balanced": {"step": 0.40, "review": 0.70, "decline": 0.85},
+            "lenient":  {"step": 0.55, "review": 0.80, "decline": 0.92},
+        }
+        if profile not in presets:
+            return {"error": f"Bilinmeyen profil: {profile}"}
+        rm.set_thresholds(presets[profile])
+        return {"profile": profile, "thresholds": presets[profile]}
 
     def _resolve_stepup(self, body: dict) -> dict:
         """Step-up kararındaki bir işlemi kullanıcı onayı/reddi ile sonuçlandırır."""
@@ -419,8 +498,18 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("PORT", 8787))
+    # Kalıcılık: DB'yi hazırla. RESET_DB=1 ile temiz başla (demo).
+    reset = os.environ.get("RESET_DB", "0") == "1"
+    persistence.init_db(reset=reset)
+    if not reset:
+        STATE.restore()
+        st = persistence.stats()
+        print(f"Kalıcı durum yüklendi: {st['mandates']} mandate, "
+              f"{st['transactions']} işlem, {st['tokens']} token, "
+              f"{st['audit_events']} audit olayı.")
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"IntentPay AI backend çalışıyor:  http://localhost:{port}")
+    print(f"Veritabanı: {persistence.stats()['db_path']}")
     server.serve_forever()
 
 
