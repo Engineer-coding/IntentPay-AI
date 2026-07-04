@@ -17,6 +17,20 @@ const VERDICT_TR = {
 };
 const VERDICT_ICON = { approve: "✓", "step-up": "!", review: "◐", decline: "✕" };
 
+const RULE_TR = {
+  mandate_status: "Mandate durumu",
+  validity_date: "Geçerlilik süresi",
+  agent_authorization: "Ajan yetkisi",
+  token_reuse: "Token tekrar kullanımı",
+  blocked_category: "Yasaklı kategori",
+  allowed_category: "İzinli kategori",
+  amount_limit: "Tutar limiti",
+  total_spending_limit: "Toplam harcama tavanı",
+  merchant_approval: "Satıcı onayı",
+  new_merchant_stepup: "Yeni satıcı kontrolü",
+  velocity_limit: "Hız limiti (velocity)",
+};
+
 const EXAMPLES = [
   "Bu hafta en fazla 5.000 TL ofis sandalyesi satın al. Yalnızca onaylı satıcılardan alışveriş yap. Elektronik alma.",
   "Bu ay ofis malzemeleri için 8.000 TL'ye kadar harca. Yeni bir satıcıdan alacaksan benden onay iste.",
@@ -61,6 +75,63 @@ const GUIDED_DEMO_FLOW = [
     expected: "Decline",
     desc: "Satıcı onaylı listede değil.",
   },
+];
+
+const EVENT_TR = {
+  transaction_request: {
+    label: "İşlem Talebi",
+    desc: "AI ajanının ödeme isteği oluşturduğu ilk kayıt.",
+    tone: "info",
+  },
+  policy_evaluation: {
+    label: "Policy Engine",
+    desc: "Mandate kuralları işlemle karşılaştırılır.",
+    tone: "policy",
+  },
+  risk_scoring: {
+    label: "Risk Modeli",
+    desc: "İşlem için risk skoru ve risk faktörleri hesaplanır.",
+    tone: "risk",
+  },
+  decision: {
+    label: "Nihai Karar",
+    desc: "Policy ve risk sonucu birleştirilerek karar üretilir.",
+    tone: "decision",
+  },
+  token_issued: {
+    label: "Token Üretimi",
+    desc: "Sadece onaylanan işlem için sınırlı ödeme token’ı üretilir.",
+    tone: "token",
+  },
+  stepup_resolved: {
+    label: "Step-up Çözümü",
+    desc: "Kullanıcının ek onay cevabı kaydedilir.",
+    tone: "stepup",
+  },
+  intent_parsed: {
+    label: "Niyet Ayrıştırma",
+    desc: "Doğal dil talimatı mandate kurallarına çevrilir.",
+    tone: "info",
+  },
+  mandate_approved: {
+    label: "Mandate Onayı",
+    desc: "Kullanıcı kuralları onaylayıp aktif hale getirir.",
+    tone: "token",
+  },
+  intent_blocked: {
+    label: "Saldırı Engellendi",
+    desc: "Talimat içinde manipülasyon denemesi yakalandı.",
+    tone: "danger",
+  },
+};
+
+const EVENT_ORDER = [
+  "transaction_request",
+  "policy_evaluation",
+  "risk_scoring",
+  "decision",
+  "token_issued",
+  "stepup_resolved",
 ];
 /* =================================================================== */
 function App() {
@@ -215,6 +286,9 @@ function App() {
     setStep(5);
     refreshPersist();
 
+    if (auditOpen) {
+      loadAudit({ scroll: false }).catch(() => { });
+    }
     if (analytics) {
       refreshAnalytics().catch(() => { });
     }
@@ -305,13 +379,31 @@ function App() {
       refreshAnalytics().catch(() => { });
     }
     refreshPersist();
+    if (auditOpen) {
+      loadAudit({ scroll: false }).catch(() => { });
+    }
   };
 
-  const loadAudit = async () => {
+  const loadAudit = async ({ scroll = true } = {}) => {
     const d = await fetch(`${API}/api/audit`).then(r => r.json());
-    setAudit(d.transactions || []); setAuditOpen(true); setStep(6);
-    setTimeout(() => document.getElementById("audit")?.scrollIntoView({ behavior: "smooth" }), 100);
+    setAudit(d.transactions || []);
+    setAuditOpen(true);
+    setStep(6);
+
+    if (scroll) {
+      setTimeout(() => document.getElementById("audit")?.scrollIntoView({ behavior: "smooth" }), 100);
+    }
   };
+
+  useEffect(() => {
+    if (!auditOpen) return;
+
+    const timer = setInterval(() => {
+      loadAudit({ scroll: false }).catch(() => { });
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [auditOpen]);
 
   const refreshAnalytics = async ({ scroll = false } = {}) => {
     const d = await fetch(`${API}/api/analytics`).then(r => r.json());
@@ -858,14 +950,6 @@ function PolicyBreakdown({ pol }) {
   const passed = pol.passed_rules || [];
   const failed = pol.failed_rules || [];
   const warns = pol.warnings || [];
-  const RULE_TR = {
-    mandate_status: "Mandate durumu", validity_date: "Geçerlilik süresi",
-    agent_authorization: "Ajan yetkisi", token_reuse: "Token tekrar kullanımı",
-    blocked_category: "Yasaklı kategori", allowed_category: "İzinli kategori",
-    amount_limit: "Tutar limiti", total_spending_limit: "Toplam harcama tavanı",
-    merchant_approval: "Satıcı onayı", new_merchant_stepup: "Yeni satıcı kontrolü",
-    velocity_limit: "Hız limiti (velocity)",
-  };
   return (
     <div style={{ marginTop: 20 }}>
       <div className="rh" style={{
@@ -890,87 +974,354 @@ function PolicyBreakdown({ pol }) {
 
 function AuditView({ id, items, onRefresh }) {
   const [open, setOpen] = useState({});
+  const [filter, setFilter] = useState("all");
+
+  const txItems = (items || []).filter(it => it.final_decision);
+  const counts = {
+    all: txItems.length,
+    approve: txItems.filter(it => it.final_decision === "approve").length,
+    "step-up": txItems.filter(it => it.final_decision === "step-up").length,
+    decline: txItems.filter(it => it.final_decision === "decline").length,
+    review: txItems.filter(it => it.final_decision === "review").length,
+  };
+
+  const shown = txItems.filter(it => filter === "all" || it.final_decision === filter);
+
+  const auditSummary = {
+    events: shown.reduce((sum, it) => sum + (it.events || []).length, 0),
+    failures: shown.reduce((sum, it) => {
+      const policy = (it.events || []).find(e => e.event_type === "policy_evaluation");
+      return sum + ((policy?.details?.failed || []).length || 0);
+    }, 0),
+    warnings: shown.reduce((sum, it) => {
+      const policy = (it.events || []).find(e => e.event_type === "policy_evaluation");
+      return sum + ((policy?.details?.warnings || []).length || 0);
+    }, 0),
+  };
+
+  const getTxSnapshot = it => {
+    const tx = (it.events || []).find(e => e.event_type === "transaction_request")?.details || {};
+    const risk = (it.events || []).find(e => e.event_type === "risk_scoring")?.details || {};
+    const policy = (it.events || []).find(e => e.event_type === "policy_evaluation")?.details || {};
+
+    return { tx, risk, policy };
+  };
+
   return (
     <div id={id}>
       <div className="section-gap" />
-      <Panel eyebrow="Adım 6 · Denetim" title="Audit Log — Karar Geçmişi"
-        sub="Her işlemin niyet→mandate→policy→risk→karar zinciri denetlenebilir biçimde kayıtlı.">
-        <div className="btn-row" style={{ marginTop: 0, marginBottom: 16 }}>
-          <button className="btn btn-ghost" onClick={onRefresh}>↻ Yenile</button>
-          <span className="muted">{items.length} işlem kaydı</span>
+      <Panel eyebrow="Adım 6 · Denetim" title="Audit Log — Açıklanabilir Karar Zinciri"
+        sub="Her işlem için AI ajan talebi, policy kontrolü, risk skoru, nihai karar ve token/step-up kayıtları izlenebilir.">
+        <div className="audit-toolbar">
+          <div className="btn-row" style={{ marginTop: 0 }}>
+            <button className="btn btn-ghost" onClick={() => onRefresh({ scroll: false })}>↻ Yenile</button>
+            <span className="live-pill"><i /> Otomatik yenileniyor</span>
+          </div>
+          <span className="muted">{shown.length} işlem · {auditSummary.events} olay</span>
         </div>
-        {items.length === 0
-          ? <div className="audit-empty"><div className="ico">⊟</div>
-            Henüz denetim kaydı yok. Bir senaryo çalıştırın.</div>
-          : items.filter(it => it.final_decision).map(it => (
-            <div key={it.transaction_id} className={"audit-item " + (open[it.transaction_id] ? "open" : "")}>
-              <div className="audit-head"
-                onClick={() => setOpen(o => ({ ...o, [it.transaction_id]: !o[it.transaction_id] }))}>
-                <span className={"vbadge " + it.final_decision}>
-                  {VERDICT_TR[it.final_decision] || it.final_decision}</span>
-                <div className="ax">
-                  <div className="axt">{it.transaction_id}</div>
-                  <div className="axe">{it.explanation}</div>
-                </div>
-                <span className="caret">▸</span>
-              </div>
-              <div className="audit-body">
-                {it.events.map((e, i) => (
-                  <div className="evt" key={i}>
-                    <div className="et">{e.event_type}</div>
-                    <div className="ed"><AuditDetail e={e} /></div>
-                  </div>
-                ))}
-              </div>
-            </div>
+
+        <div className="audit-kpis">
+          <div className="audit-kpi">
+            <b>{txItems.length}</b>
+            <span>İşlem Kaydı</span>
+          </div>
+          <div className="audit-kpi">
+            <b style={{ color: "var(--approve)" }}>{counts.approve}</b>
+            <span>Onay</span>
+          </div>
+          <div className="audit-kpi">
+            <b style={{ color: "var(--stepup)" }}>{counts["step-up"]}</b>
+            <span>Step-up</span>
+          </div>
+          <div className="audit-kpi">
+            <b style={{ color: "var(--decline)" }}>{counts.decline}</b>
+            <span>Red</span>
+          </div>
+          <div className="audit-kpi">
+            <b>{auditSummary.failures} / {auditSummary.warnings}</b>
+            <span>İhlal / Uyarı</span>
+          </div>
+        </div>
+
+        <div className="audit-filters">
+          {[
+            ["all", "Tümü", counts.all],
+            ["approve", "Onay", counts.approve],
+            ["step-up", "Step-up", counts["step-up"]],
+            ["decline", "Red", counts.decline],
+            ["review", "Review", counts.review],
+          ].map(([key, label, count]) => (
+            <button
+              key={key}
+              className={"audit-filter " + (filter === key ? "active" : "")}
+              onClick={() => setFilter(key)}
+            >
+              {label} <span>{count}</span>
+            </button>
           ))}
+        </div>
+
+        {shown.length === 0
+          ? <div className="audit-empty"><div className="ico">⊟</div>
+            Bu filtrede denetim kaydı yok. Full demo flow çalıştırınca kayıtlar burada görünür.</div>
+          : shown.map(it => {
+            const { tx, risk, policy } = getTxSnapshot(it);
+            const isOpen = !!open[it.transaction_id];
+
+            return (
+              <div key={it.transaction_id} className={"audit-item " + (isOpen ? "open" : "")}>
+                <div className="audit-head"
+                  onClick={() => setOpen(o => ({ ...o, [it.transaction_id]: !o[it.transaction_id] }))}>
+                  <span className={"vbadge " + it.final_decision}>
+                    {VERDICT_TR[it.final_decision] || it.final_decision}
+                  </span>
+
+                  <div className="ax">
+                    <div className="axt">
+                      {tx.merchant || "Satıcı yok"} · {fmtTL(tx.amount || 0)}
+                    </div>
+                    <div className="axe">
+                      {CAT_TR[tx.category] || tx.category || "Kategori yok"} ·
+                      Risk: {risk.risk_level || "-"} {typeof risk.risk_score === "number" ? `(${risk.risk_score.toFixed(2)})` : ""} ·
+                      Policy: {policy.preliminary_decision || "-"}
+                    </div>
+                  </div>
+
+                  <div className="audit-mini">
+                    <span>{(policy.failed || []).length} ihlal</span>
+                    <span>{(policy.warnings || []).length} uyarı</span>
+                  </div>
+
+                  <span className="caret">▸</span>
+                </div>
+
+                <div className="audit-explain">
+                  <b>Karar açıklaması:</b> {it.explanation || "Açıklama yok."}
+                </div>
+
+                <div className="audit-body">
+                  <AuditChain events={it.events || []} />
+                </div>
+              </div>
+            );
+          })}
       </Panel>
+    </div>
+  );
+}
+
+function AuditChain({ events }) {
+  const sorted = [...events].sort((a, b) => {
+    const ai = EVENT_ORDER.indexOf(a.event_type);
+    const bi = EVENT_ORDER.indexOf(b.event_type);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+
+  return (
+    <div className="audit-chain">
+      {sorted.map((e, i) => {
+        const meta = EVENT_TR[e.event_type] || {
+          label: e.event_type,
+          desc: "Ham audit olayı.",
+          tone: "info",
+        };
+
+        return (
+          <div className={"chain-step " + meta.tone} key={i}>
+            <div className="chain-line">
+              <span className="chain-dot">{i + 1}</span>
+            </div>
+            <div className="chain-card">
+              <div className="chain-top">
+                <div>
+                  <b>{meta.label}</b>
+                  <span>{meta.desc}</span>
+                </div>
+                <em>{e.event_type}</em>
+              </div>
+              <AuditDetail e={e} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 function AuditDetail({ e }) {
   const d = e.details || {};
-  if (e.event_type === "risk_scoring") {
-    return <div>Risk skoru <b className="mono">{d.risk_score}</b> ({d.risk_level}) ·
-      model: {d.mode} · önerilen: {d.suggested_action}</div>;
-  }
-  if (e.event_type === "policy_evaluation") {
-    return <div>Ön karar: <b>{d.preliminary_decision}</b> ·
-      {(d.passed || []).length} geçti, {(d.failed || []).length} ihlal, {(d.warnings || []).length} uyarı</div>;
-  }
-  if (e.event_type === "decision") {
-    return <div><b>{VERDICT_TR[d.final_decision] || d.final_decision}</b> — {d.explanation}</div>;
-  }
-  if (e.event_type === "token_issued") {
-    return <div>Token üretildi: <span className="mono">{d.token_id}</span> ·
-      {fmtTL(d.max_amount)} · {d.status}</div>;
-  }
+
   if (e.event_type === "transaction_request") {
-    return <div>{d.cart} · {fmtTL(d.amount)} · {CAT_TR[d.category] || d.category} · satıcı: {d.merchant}</div>;
+    return (
+      <div className="audit-detail">
+        <div className="detail-grid">
+          <div><span>Satıcı</span><b>{d.merchant || "-"}</b></div>
+          <div><span>Tutar</span><b>{fmtTL(d.amount || 0)}</b></div>
+          <div><span>Kategori</span><b>{CAT_TR[d.category] || d.category || "-"}</b></div>
+          <div><span>Ajan</span><b className="mono">{d.agent_id || "-"}</b></div>
+        </div>
+        {d.cart && <div className="detail-note">Ürün: {d.cart}</div>}
+        {d.note && <div className="detail-note">Not: {d.note}</div>}
+      </div>
+    );
   }
-  if (e.event_type === "intent_parsed") {
-    const scan = d.security_scan;
-    return <div>
-      Talimat ayrıştırıldı ({d.parse_mode})
-      {scan && scan.is_attack && (
-        <span style={{ color: "var(--decline)", marginLeft: 6 }}>
-          · ⚠ {scan.detections.length} manipülasyon sinyali engellendi
-        </span>
-      )}
-      {scan && !scan.is_attack && (
-        <span style={{ color: "var(--approve)", marginLeft: 6 }}>· 🛡 güvenlik temiz</span>
-      )}
-    </div>;
+
+  if (e.event_type === "policy_evaluation") {
+    const passed = d.passed || d.passed_rules || [];
+    const failed = d.failed || d.failed_rules || [];
+    const warnings = d.warnings || [];
+
+    return (
+      <div className="audit-detail">
+        <div className="policy-summary">
+          <span>Ön karar: <b>{d.preliminary_decision}</b></span>
+          <span>{passed.length} geçti</span>
+          <span>{failed.length} ihlal</span>
+          <span>{warnings.length} uyarı</span>
+        </div>
+
+        <div className="audit-rules">
+          {passed.map(r => (
+            <span key={r} className="tag allow">✓ {RULE_TR[r] || r}</span>
+          ))}
+
+          {warnings.map((w, i) => (
+            <span key={"w" + i} className="tag warn">! {RULE_TR[w.rule] || w.rule}</span>
+          ))}
+
+          {failed.map((f, i) => (
+            <span key={"f" + i} className="tag block">✕ {RULE_TR[f.rule] || f.rule}</span>
+          ))}
+        </div>
+
+        {(failed.length > 0 || warnings.length > 0) && (
+          <div className="rule-reasons">
+            {failed.map((f, i) => (
+              <div key={"fr" + i} className="reason bad">✕ {f.reason}</div>
+            ))}
+            {warnings.map((w, i) => (
+              <div key={"wr" + i} className="reason warn">! {w.reason}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   }
+
+  if (e.event_type === "risk_scoring") {
+    const factors = d.top_risk_factors || [];
+
+    return (
+      <div className="audit-detail">
+        <div className="risk-audit-head">
+          <div>
+            Risk skoru <b className="mono">{Number(d.risk_score || 0).toFixed(3)}</b>
+            {" "}· seviye: <b>{d.risk_level}</b>
+            {" "}· öneri: <b>{d.suggested_action}</b>
+          </div>
+          <span className="risk-mode">{d.mode || "risk_model"}</span>
+        </div>
+
+        {factors.length > 0 && (
+          <div className="risk-factor-list">
+            {factors.map((f, i) => {
+              const val = Number(f.contribution || 0);
+              return (
+                <div className="risk-factor-row" key={i}>
+                  <div className="rf-top">
+                    <span>{f.factor}</span>
+                    <b className="mono">{val.toFixed(2)}</b>
+                  </div>
+                  <div className="rf-bar">
+                    <i style={{ width: Math.min(100, Math.max(4, val * 100)) + "%" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (e.event_type === "decision") {
+    return (
+      <div className="audit-detail">
+        <div className="decision-line">
+          <b>{VERDICT_TR[d.final_decision] || d.final_decision}</b>
+          <span>{d.explanation}</span>
+        </div>
+        {(d.explanation_factors || []).length > 0 && (
+          <div className="rule-reasons">
+            {d.explanation_factors.map((x, i) => (
+              <div key={i} className="reason info">› {x}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (e.event_type === "token_issued") {
+    return (
+      <div className="audit-detail">
+        <div className="token-box">
+          <div>
+            <span>Token ID</span>
+            <b className="mono">{d.token_id}</b>
+          </div>
+          <div>
+            <span>Limit</span>
+            <b>{fmtTL(d.max_amount || 0)}</b>
+          </div>
+          <div>
+            <span>Durum</span>
+            <b>{d.status}</b>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (e.event_type === "stepup_resolved") {
     const ap = d.resolution === "approved";
-    return <div style={{ color: ap ? "var(--approve)" : "var(--decline)" }}>
-      {ap ? "✓ Kullanıcı onayladı" : "✕ Kullanıcı reddetti"} — {d.explanation}</div>;
+    return (
+      <div className="audit-detail">
+        <div className={"stepup-resolution " + (ap ? "ok" : "bad")}>
+          {ap ? "✓ Kullanıcı ek onayı verdi" : "✕ Kullanıcı ek onayı reddetti"}
+          <span>{d.explanation}</span>
+        </div>
+      </div>
+    );
   }
+
+  if (e.event_type === "intent_parsed") {
+    const scan = d.security_scan;
+    return (
+      <div className="audit-detail">
+        <div>
+          Talimat ayrıştırıldı. Parser modu: <b>{d.parse_mode}</b>
+          {scan && scan.is_attack && (
+            <span style={{ color: "var(--decline)", marginLeft: 6 }}>
+              · {scan.detections.length} manipülasyon sinyali engellendi
+            </span>
+          )}
+          {scan && !scan.is_attack && (
+            <span style={{ color: "var(--approve)", marginLeft: 6 }}>· güvenlik temiz</span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (e.event_type === "mandate_approved") {
-    return <div>Mandate aktifleştirildi · <span className="mono">{d.mandate_id}</span></div>;
+    return (
+      <div className="audit-detail">
+        Mandate aktifleştirildi · <span className="mono">{d.mandate_id}</span>
+      </div>
+    );
   }
+
   return <pre>{JSON.stringify(d, null, 1)}</pre>;
 }
 
