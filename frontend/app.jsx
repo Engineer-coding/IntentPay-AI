@@ -151,11 +151,27 @@ function App() {
     setTimeout(() => document.getElementById("audit")?.scrollIntoView({ behavior: "smooth" }), 100);
   };
 
-  const loadAnalytics = async () => {
+  const refreshAnalytics = async ({ scroll = false } = {}) => {
     const d = await fetch(`${API}/api/analytics`).then(r => r.json());
     setAnalytics(d);
-    setTimeout(() => document.getElementById("analytics")?.scrollIntoView({ behavior: "smooth" }), 100);
+    if (scroll) {
+      setTimeout(() => document.getElementById("analytics")?.scrollIntoView({ behavior: "smooth" }), 100);
+    }
   };
+
+  const loadAnalytics = async () => {
+    await refreshAnalytics({ scroll: true });
+  };
+
+  useEffect(() => {
+    if (!analytics) return;
+
+    const timer = setInterval(() => {
+      refreshAnalytics().catch(() => { });
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [analytics !== null]);
 
   const setRiskProfileAndApply = async (profile) => {
     setRiskProfile(profile);
@@ -831,42 +847,125 @@ function StepupDialog({ resolved, onResolve }) {
 
 /* ---------- Analytics Dashboard ---------- */
 function AnalyticsView({ id, data, onRefresh }) {
-  const d = data.decisions || {};
-  const total = data.total_transactions || 0;
+  const summary = data.summary || {};
+  const total = summary.total_transactions ?? data.total_transactions ?? 0;
+
+  const legacyDecisions = data.decisions || {};
+  const decisionRows = (data.decision_distribution || [
+    {
+      key: "approved",
+      source: "approve",
+      label_tr: "Onaylandı",
+      count: legacyDecisions.approve || 0,
+      percentage: total ? ((legacyDecisions.approve || 0) / total * 100) : 0,
+    },
+    {
+      key: "step_up",
+      source: "step-up",
+      label_tr: "Ek Onay",
+      count: legacyDecisions["step-up"] || 0,
+      percentage: total ? ((legacyDecisions["step-up"] || 0) / total * 100) : 0,
+    },
+    {
+      key: "review",
+      source: "review",
+      label_tr: "İnceleme",
+      count: legacyDecisions.review || 0,
+      percentage: total ? ((legacyDecisions.review || 0) / total * 100) : 0,
+    },
+    {
+      key: "denied",
+      source: "decline",
+      label_tr: "Reddedildi",
+      count: legacyDecisions.decline || 0,
+      percentage: total ? ((legacyDecisions.decline || 0) / total * 100) : 0,
+    },
+  ]);
+
+  const legacyRisk = data.risk_buckets || {};
+  const riskRows = (data.risk_distribution || [
+    { key: "low", label_tr: "Düşük", count: legacyRisk.low || 0 },
+    { key: "medium", label_tr: "Orta", count: legacyRisk.medium || 0 },
+    { key: "high", label_tr: "Yüksek", count: legacyRisk.high || 0 },
+  ]);
+
   const maxRule = (data.top_rules || [])[0]?.count || 1;
+
   const DEC_COLORS = {
-    approve: "var(--approve)", "step-up": "var(--stepup)",
-    review: "var(--review)", decline: "var(--decline)"
+    approved: "var(--approve)",
+    step_up: "var(--stepup)",
+    review: "var(--review)",
+    denied: "var(--decline)",
   };
-  const DEC_TR = { approve: "Onay", "step-up": "Ek Onay", review: "İnceleme", decline: "Ret" };
-  const rb = data.risk_buckets || {};
+
+  const riskColor = {
+    low: "var(--approve)",
+    medium: "var(--stepup)",
+    high: "var(--decline)",
+  };
+
+  const decisionLabel = {
+    approve: "Onaylandı",
+    "step-up": "Ek Onay",
+    review: "İnceleme",
+    decline: "Reddedildi",
+  };
+
+  const timeLabel = ts => {
+    if (!ts) return "-";
+    try {
+      return new Date(ts).toLocaleTimeString("tr-TR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    } catch {
+      return "-";
+    }
+  };
+
+  const updatedAt = data.generated_at ? timeLabel(data.generated_at) : "canlı";
+
   return (
     <div id={id}>
       <div className="section-gap" />
-      <Panel eyebrow="Analytics · Karar İstatistikleri"
+      <Panel eyebrow="Analytics · Canlı Karar İstatistikleri"
         title="İşlem Karar Panosu"
-        sub="Tüm değerlendirilen işlemlerin karar, risk ve kural dağılımı.">
-        <div className="btn-row" style={{ marginTop: 0, marginBottom: 18 }}>
-          <button className="btn btn-ghost" onClick={onRefresh}>↻ Yenile</button>
+        sub="Audit log üzerinden üretilen canlı karar, risk ve işlem görünümü.">
+        <div className="analytics-head">
+          <div className="btn-row" style={{ marginTop: 0 }}>
+            <button className="btn btn-ghost" onClick={onRefresh}>↻ Yenile</button>
+            <span className="live-pill"><i /> Otomatik yenileniyor · {updatedAt}</span>
+          </div>
           <span className="muted">{total} toplam işlem</span>
         </div>
 
         {/* KPI kartları */}
-        <div className="kpi-grid">
+        <div className="kpi-grid kpi-grid-5">
           <div className="kpi">
-            <div className="kpi-v" style={{ color: "var(--approve)" }}>%{data.approve_rate}</div>
+            <div className="kpi-v">{summary.total_transactions ?? total}</div>
+            <div className="kpi-l">Toplam İşlem</div>
+          </div>
+          <div className="kpi">
+            <div className="kpi-v" style={{ color: "var(--approve)" }}>
+              %{summary.approval_rate ?? data.approve_rate ?? 0}
+            </div>
             <div className="kpi-l">Onay Oranı</div>
           </div>
           <div className="kpi">
-            <div className="kpi-v" style={{ color: "var(--decline)" }}>%{data.block_rate}</div>
-            <div className="kpi-l">Blok Oranı</div>
+            <div className="kpi-v" style={{ color: "var(--stepup)" }}>
+              %{summary.step_up_rate ?? 0}
+            </div>
+            <div className="kpi-l">Step-up Oranı</div>
           </div>
           <div className="kpi">
-            <div className="kpi-v" style={{ color: "var(--amber)" }}>{data.avg_risk.toFixed(2)}</div>
+            <div className="kpi-v" style={{ color: "var(--amber)" }}>
+              {(summary.avg_risk ?? data.avg_risk ?? 0).toFixed(2)}
+            </div>
             <div className="kpi-l">Ort. Risk Skoru</div>
           </div>
           <div className="kpi">
-            <div className="kpi-v">{fmtTL(data.total_authorized)}</div>
+            <div className="kpi-v">{fmtTL(summary.total_authorized ?? data.total_authorized ?? 0)}</div>
             <div className="kpi-l">Yetkilendirilen Tutar</div>
           </div>
         </div>
@@ -875,23 +974,73 @@ function AnalyticsView({ id, data, onRefresh }) {
         <div className="an-section">
           <div className="an-h">Karar Dağılımı</div>
           <div className="an-bars">
-            {["approve", "step-up", "review", "decline"].map(k => {
-              const c = d[k] || 0;
-              const w = total ? (c / total * 100) : 0;
+            {decisionRows.map(row => {
+              const w = row.percentage || 0;
               return (
-                <div className="an-bar-row" key={k}>
-                  <div className="an-bar-label">{DEC_TR[k]}</div>
+                <div className="an-bar-row" key={row.key}>
+                  <div className="an-bar-label">{row.label_tr || row.label || row.key}</div>
                   <div className="an-bar-track">
                     <div className="an-bar-fill" style={{
-                      width: Math.max(w, 2) + "%",
-                      background: DEC_COLORS[k]
+                      width: Math.max(w, row.count ? 2 : 0) + "%",
+                      background: DEC_COLORS[row.key] || "var(--line)"
                     }} />
                   </div>
-                  <div className="an-bar-val mono">{c}</div>
+                  <div className="an-bar-val mono">{row.count}</div>
+                  <div className="an-bar-pct mono">%{Number(w).toFixed(1)}</div>
                 </div>
               );
             })}
           </div>
+        </div>
+
+        {/* Risk dağılımı */}
+        <div className="an-section">
+          <div className="an-h">Risk Seviye Dağılımı</div>
+          <div className="risk-dist">
+            {riskRows.map(row => (
+              <div className="rd-cell" key={row.key}>
+                <span className="rd-n" style={{ color: riskColor[row.key] }}>{row.count || 0}</span>
+                <span className="rd-l">{row.label_tr || row.label || row.key}</span>
+                <span className="rd-p mono">%{Number(row.percentage || 0).toFixed(1)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Son işlemler / timeline */}
+        <div className="an-section">
+          <div className="an-h">Son İşlemler</div>
+          {(data.recent_transactions || []).length === 0 ? (
+            <div className="muted">Henüz işlem yok. Birkaç demo senaryosu çalıştırınca burada timeline oluşur.</div>
+          ) : (
+            <div className="timeline">
+              {(data.recent_transactions || []).map(tx => (
+                <div className={`tl-item ${tx.decision_key || "unknown"}`} key={tx.transaction_id}>
+                  <div className="tl-dot" />
+                  <div className="tl-main">
+                    <div className="tl-top">
+                      <b>{decisionLabel[tx.final_decision] || tx.final_decision || "Bilinmiyor"}</b>
+                      <span className="mono">{timeLabel(tx.timestamp)}</span>
+                    </div>
+                    <div className="tl-mid">
+                      <span>{tx.merchant || "Satıcı yok"}</span>
+                      <span>·</span>
+                      <span>{fmtTL(tx.amount || 0)}</span>
+                      <span>·</span>
+                      <span>{CAT_TR[tx.category] || tx.category || "Kategori yok"}</span>
+                    </div>
+                    <div className="tl-sub">
+                      Risk: <b>{tx.risk_level || "-"}</b>
+                      {typeof tx.risk_score === "number" && <> · Skor: <b>{tx.risk_score.toFixed(2)}</b></>}
+                      {(tx.failed_rule_count || tx.warning_count) ? (
+                        <> · Kurallar: <b>{tx.failed_rule_count || 0} fail</b>, <b>{tx.warning_count || 0} uyarı</b></>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* En çok tetiklenen kurallar */}
@@ -905,16 +1054,6 @@ function AnalyticsView({ id, data, onRefresh }) {
                 <div className="bar"><i style={{ width: Math.max(8, (r.count / maxRule) * 100) + "%" }} /></div>
               </div>
             ))}
-        </div>
-
-        {/* Risk dağılımı */}
-        <div className="an-section">
-          <div className="an-h">Risk Seviye Dağılımı</div>
-          <div className="risk-dist">
-            <div className="rd-cell"><span className="rd-n" style={{ color: "var(--approve)" }}>{rb.low || 0}</span><span className="rd-l">Düşük</span></div>
-            <div className="rd-cell"><span className="rd-n" style={{ color: "var(--stepup)" }}>{rb.medium || 0}</span><span className="rd-l">Orta</span></div>
-            <div className="rd-cell"><span className="rd-n" style={{ color: "var(--decline)" }}>{rb.high || 0}</span><span className="rd-l">Yüksek</span></div>
-          </div>
         </div>
       </Panel>
     </div>
