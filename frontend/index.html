@@ -500,6 +500,219 @@
       background: var(--approve-bg)
     }
 
+    /* ---- guided demo flow ---- */
+    .guided-demo {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: 1.25fr .75fr;
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    @media(max-width:980px) {
+      .guided-demo {
+        grid-template-columns: 1fr
+      }
+    }
+
+    .gd-left,
+    .gd-log {
+      background: linear-gradient(180deg, var(--ink), var(--ink-2));
+      border: 1px solid var(--line-soft);
+      border-radius: var(--r-sm);
+      padding: 16px;
+    }
+
+    .gd-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .gd-kicker {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--amber);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .gd-head h3 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: 18px;
+      letter-spacing: -.02em;
+    }
+
+    .gd-head p {
+      margin: 7px 0 0;
+      color: var(--mist);
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+
+    .gd-state {
+      flex: none;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--approve);
+      border: 1px solid #1c4a3a;
+      background: var(--approve-bg);
+      border-radius: 999px;
+      padding: 6px 9px;
+    }
+
+    .gd-state.run {
+      color: var(--amber);
+      border-color: var(--amber-line);
+      background: var(--amber-bg);
+    }
+
+    .gd-flow {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 14px;
+    }
+
+    @media(max-width:720px) {
+      .gd-flow {
+        grid-template-columns: 1fr
+      }
+    }
+
+    .gd-step {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+      background: var(--ink-3);
+      border: 1px solid var(--line-soft);
+      border-radius: 12px;
+      padding: 10px 11px;
+    }
+
+    .gd-num {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: var(--amber-bg);
+      color: var(--amber);
+      border: 1px solid var(--amber-line);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .gd-step b {
+      display: block;
+      font-size: 12.5px;
+      font-family: var(--display);
+    }
+
+    .gd-step span {
+      display: block;
+      color: var(--ghost);
+      font-size: 11px;
+      line-height: 1.35;
+      margin-top: 3px;
+    }
+
+    .gd-step em {
+      font-style: normal;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--mist);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 7px;
+    }
+
+    .gd-log {
+      min-height: 260px;
+      max-height: 430px;
+      overflow: auto;
+    }
+
+    .gd-log-h {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--ghost);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 10px;
+    }
+
+    .gd-empty {
+      color: var(--ghost);
+      font-size: 12px;
+      line-height: 1.5;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    .gd-log-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 9px;
+      align-items: start;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .gd-log-item:last-child {
+      border-bottom: 0;
+    }
+
+    .gd-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      margin-top: 4px;
+      background: var(--ghost);
+    }
+
+    .gd-log-item.ok .gd-dot {
+      background: var(--approve)
+    }
+
+    .gd-log-item.warn .gd-dot {
+      background: var(--stepup)
+    }
+
+    .gd-log-item.bad .gd-dot {
+      background: var(--decline)
+    }
+
+    .gd-log-item.run .gd-dot {
+      background: var(--amber);
+      box-shadow: 0 0 0 4px rgba(245, 165, 36, .08);
+    }
+
+    .gd-log-item b {
+      display: block;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .gd-log-item small {
+      display: block;
+      color: var(--ghost);
+      font-size: 11px;
+      margin-top: 3px;
+      line-height: 1.35;
+    }
+
+    .gd-log-item time {
+      color: var(--ghost);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
     /* ---- scenario cards ---- */
     .scn-grid {
       display: grid;
