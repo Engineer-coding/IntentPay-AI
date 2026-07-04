@@ -309,9 +309,23 @@ class Handler(BaseHTTPRequestHandler):
 
         # --- güvenlik taraması: talimata gizlenmiş manipülasyon var mı? ---
         scan = scan_text(text)
+        
+        if scan["is_attack"]:
+            STATE.audit.record("security:" + str(now_ms()), "intent_blocked", {
+                "original_intent": text,
+                "security_scan": scan,
+                "reason": "Prompt injection/manipülasyon tespit edildiği için mandate oluşturulmadı.",
+            })
+            return {
+                "blocked": True,
+                "parse_mode": "blocked",
+                "security_scan": scan,
+                "mandate": None,
+                "error": "Manipülasyon denemesi tespit edildi. Talimat reddedildi; mandate oluşturulmadı.",
+            }        
 
         result = parse_intent(text, user_id)
-        # saldırı tespit edilirse mandate güvenli sınırlara çekilir (defense in depth)
+        # normal talimatlarda ek güvenlik için mandate sınırları normalize edilir
         result["mandate"] = sanitize_mandate(result["mandate"], scan)
         result["security_scan"] = scan
 
