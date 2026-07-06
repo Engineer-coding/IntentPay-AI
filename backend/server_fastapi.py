@@ -85,6 +85,17 @@ class ApproveMandateRequest(APIRequest):
     )
 
 
+class UpdateMandateRequest(APIRequest):
+    mandate_id: str = Field(
+        description="Mandate identifier returned by /api/intent/parse.",
+        examples=["man_1234567890"],
+    )
+    updates: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Editable mandate fields before approval.",
+    )
+
+
 class AgentRequest(APIRequest):
     scenario: str = Field(
         description="Demo scenario key used by the agent simulator.",
@@ -210,6 +221,17 @@ def approve_mandate(body: ApproveMandateRequest) -> dict[str, Any]:
         return api_response.envelope(
             api_core.approve_mandate(body.model_dump(exclude_none=True)),
             default_error_code="MANDATE_APPROVAL_FAILED",
+        )
+    except Exception as exc:
+        return api_response.exception_response(exc)
+
+
+@app.post("/api/mandate/update")
+def update_mandate(body: UpdateMandateRequest) -> dict[str, Any]:
+    try:
+        return api_response.envelope(
+            api_core.update_mandate(body.model_dump(exclude_none=True)),
+            default_error_code="MANDATE_UPDATE_FAILED",
         )
     except Exception as exc:
         return api_response.exception_response(exc)
