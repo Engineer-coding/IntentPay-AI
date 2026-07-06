@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Load local environment variables if .env exists.
+if [ -f ".env" ]; then
+  set -a
+  . ./.env
+  set +a
+fi
+
 # IntentPay AI - Tek komutla başlatma
 # Backend + Frontend tek sunucudan servis edilir.
 #

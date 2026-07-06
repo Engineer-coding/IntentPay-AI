@@ -1,14 +1,12 @@
-
-
 """
 IntentPay AI - FastAPI Backend
 ==============================
 Compatibility-first FastAPI migration.
 
-This module keeps the existing endpoint paths and delegates core business
-behavior to the current stdlib `server.py` implementation. The goal is to
-move the HTTP layer to FastAPI without changing the LLM parser, policy engine,
-risk model, decision flow, token logic, persistence, analytics, or audit logic.
+This module keeps the existing endpoint paths while using FastAPI routes,
+request schemas, OpenAPI docs, and CORS middleware. HTTP-independent endpoint
+orchestration lives in `services.api_core`; core parser, policy, risk,
+decision, token, persistence, analytics, and audit behavior are preserved.
 """
 from __future__ import annotations
 
@@ -16,12 +14,14 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Body, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-import server as core
+from models.schema import now_ms
+from services import api_core, persistence
+from services.app_state import STATE
 
 
 app = FastAPI(
@@ -37,6 +37,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 class APIRequest(BaseModel):
     """Base request model. Extra fields are allowed for backward compatibility."""
@@ -123,19 +124,15 @@ class RiskThresholdRequest(APIRequest):
         examples=["balanced"],
     )
 
-def handler() -> core.Handler:
-    """Create an uninitialized Handler instance to reuse server.py methods."""
-    return core.Handler.__new__(core.Handler)
-
 
 @app.on_event("startup")
 def startup() -> None:
     reset = os.environ.get("RESET_DB", "0") == "1"
-    core.persistence.init_db(reset=reset)
+    persistence.init_db(reset=reset)
 
     if not reset:
-        core.STATE.restore()
-        st = core.persistence.stats()
+        STATE.restore()
+        st = persistence.stats()
         print(
             f"Kalıcı durum yüklendi: {st['mandates']} mandate, "
             f"{st['transactions']} işlem, {st['tokens']} token, "
@@ -143,49 +140,47 @@ def startup() -> None:
         )
 
     print("IntentPay AI FastAPI backend çalışıyor.")
-    print(f"Veritabanı: {core.persistence.stats()['db_path']}")
+    print(f"Veritabanı: {persistence.stats()['db_path']}")
 
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "time": core.now_ms(),
+        "time": now_ms(),
         "server": "fastapi",
     }
 
 
 @app.get("/api/bootstrap")
 def bootstrap() -> dict[str, Any]:
-    return handler()._bootstrap()
+    return api_core.bootstrap()
 
 
 @app.get("/api/audit")
 def audit() -> dict[str, Any]:
-    return {
-        "transactions": core.STATE.audit.grouped_by_transaction(),
-        "raw": core.STATE.audit.all(),
-    }
+    return api_core.audit()
 
 
 @app.get("/api/tokens")
 def tokens() -> dict[str, Any]:
-    return {"tokens": core.STATE.tokens.all()}
+    return api_core.tokens()
 
 
 @app.get("/api/analytics")
 def analytics() -> dict[str, Any]:
-    return handler()._analytics()
+    return api_core.analytics()
 
 
 @app.get("/api/persistence")
 def persistence_stats() -> dict[str, Any]:
-    return core.persistence.stats()
+    return api_core.persistence_stats()
+
 
 @app.post("/api/intent/parse")
 def parse_intent(body: ParseIntentRequest) -> dict[str, Any]:
     try:
-        return handler()._parse(body.model_dump(exclude_none=True))
+        return api_core.parse_intent(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -193,7 +188,7 @@ def parse_intent(body: ParseIntentRequest) -> dict[str, Any]:
 @app.post("/api/mandate/approve")
 def approve_mandate(body: ApproveMandateRequest) -> dict[str, Any]:
     try:
-        return handler()._approve(body.model_dump(exclude_none=True))
+        return api_core.approve_mandate(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -201,7 +196,7 @@ def approve_mandate(body: ApproveMandateRequest) -> dict[str, Any]:
 @app.post("/api/agent/request")
 def agent_request(body: AgentRequest) -> dict[str, Any]:
     try:
-        return handler()._agent_request(body.model_dump(exclude_none=True))
+        return api_core.agent_request(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -209,7 +204,7 @@ def agent_request(body: AgentRequest) -> dict[str, Any]:
 @app.post("/api/transaction/evaluate")
 def transaction_evaluate(body: TransactionEvaluateRequest) -> dict[str, Any]:
     try:
-        return core.evaluate_transaction(body.transaction)
+        return api_core.evaluate_transaction(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -217,7 +212,7 @@ def transaction_evaluate(body: TransactionEvaluateRequest) -> dict[str, Any]:
 @app.post("/api/security/scan")
 def security_scan(body: SecurityScanRequest) -> dict[str, Any]:
     try:
-        return core.scan_text(body.text)
+        return api_core.security_scan(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -225,7 +220,7 @@ def security_scan(body: SecurityScanRequest) -> dict[str, Any]:
 @app.post("/api/stepup/resolve")
 def stepup_resolve(body: StepupResolveRequest) -> dict[str, Any]:
     try:
-        return handler()._resolve_stepup(body.model_dump(exclude_none=True))
+        return api_core.resolve_stepup(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -233,7 +228,7 @@ def stepup_resolve(body: StepupResolveRequest) -> dict[str, Any]:
 @app.post("/api/token/tamper")
 def token_tamper(body: TokenTamperRequest) -> dict[str, Any]:
     try:
-        return handler()._tamper_token(body.model_dump(exclude_none=True))
+        return api_core.tamper_token(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -241,11 +236,11 @@ def token_tamper(body: TokenTamperRequest) -> dict[str, Any]:
 @app.post("/api/risk/threshold")
 def risk_threshold(body: RiskThresholdRequest) -> dict[str, Any]:
     try:
-        return handler()._set_threshold(body.model_dump(exclude_none=True))
+        return api_core.set_risk_threshold(body.model_dump(exclude_none=True))
     except Exception as exc:
         return {"error": str(exc)}
-    
-    
+
+
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
