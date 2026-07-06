@@ -164,6 +164,7 @@ function App() {
   const [intentText, setIntentText] = useState(EXAMPLES[0]);
   const [parsing, setParsing] = useState(false);
   const [mandate, setMandate] = useState(null);
+  const [mandateEditorOpen, setMandateEditorOpen] = useState(false);
   const [parseMode, setParseMode] = useState(null);
   const [approving, setApproving] = useState(false);
   const [evalResult, setEvalResult] = useState(null);
@@ -215,6 +216,7 @@ function App() {
 
     setParsing(true);
     setMandate(null);
+    setMandateEditorOpen(false);
     setSecurityScan(null);
 
     try {
@@ -269,6 +271,20 @@ function App() {
     } finally {
       setParsing(false);
     }
+  };
+
+  const updateMandate = async (updates) => {
+    if (!mandate?.mandate_id) return null;
+
+    const d = await apiFetch("/api/mandate/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mandate_id: mandate.mandate_id, updates })
+    });
+
+    const updated = d.mandate || mandate;
+    setMandate(updated);
+    return updated;
   };
 
   const approve = async (mandateOverride = null) => {
@@ -547,6 +563,13 @@ function App() {
               sub="LLM/parser çıktısı doğrudan yetki vermez. Onaylamadan aktif olmaz."
               badge={parseMode}>
               <MandateView m={mandate} />
+              {mandate.status === "pending" && mandateEditorOpen && (
+                <MandateEditor
+                  mandate={mandate}
+                  categories={boot.categories || CAT_TR}
+                  onSave={updateMandate}
+                />
+              )}
               {mandate.status === "active"
                 ? <div className="notice fade-in"><span className="i">✓</span>
                   <span>Mandate <b>aktif</b>. Artık AI ajanı bu kurallar dahilinde ödeme isteği oluşturabilir.</span></div>
@@ -554,7 +577,9 @@ function App() {
                   <button className="btn btn-primary" onClick={() => approve()} disabled={approving}>
                     {approving ? <><span className="spin"></span> Onaylanıyor</> : <>Kuralları Onayla & Aktifleştir</>}
                   </button>
-                  <button className="btn btn-ghost" onClick={() => setStep(1)}>Talimatı Düzenle</button>
+                  <button className="btn btn-ghost" onClick={() => setMandateEditorOpen(v => !v)}>
+                    {mandateEditorOpen ? "Düzenlemeyi Kapat" : "Talimatı Düzenle"}
+                  </button>
                 </div>}
             </Panel>
           </>
@@ -738,6 +763,167 @@ function MandateView({ m }) {
     </div>
   );
 }
+
+
+function MandateEditor({ mandate, categories, onSave }) {
+  const allCategories = Object.keys(categories || CAT_TR);
+  const now = Date.now();
+  const currentDays = Math.max(1, Math.round((mandate.valid_until - mandate.valid_from) / 86400000));
+
+  const [draft, setDraft] = useState({
+    max_amount: mandate.max_amount,
+    total_limit: mandate.total_limit,
+    allowed_categories: mandate.allowed_categories || [],
+    blocked_categories: mandate.blocked_categories || [],
+    approved_only: (mandate.allowed_merchants || []).includes("__approved_only__"),
+    requires_approval_for_new_merchant: mandate.requires_approval_for_new_merchant,
+    valid_days: currentDays,
+    risk_threshold: mandate.risk_threshold ?? 0.7,
+  });
+
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const toggleList = (field, value) => {
+    setDraft(prev => {
+      const set = new Set(prev[field] || []);
+      if (set.has(value)) set.delete(value);
+      else set.add(value);
+      return { ...prev, [field]: Array.from(set) };
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setSaved(false);
+    setErr(null);
+
+    try {
+      const validFrom = mandate.valid_from || now;
+      const updates = {
+        max_amount: Number(draft.max_amount),
+        total_limit: Number(draft.total_limit),
+        allowed_categories: draft.allowed_categories,
+        blocked_categories: draft.blocked_categories,
+        allowed_merchants: draft.approved_only ? ["__approved_only__"] : [],
+        requires_approval_for_new_merchant: !!draft.requires_approval_for_new_merchant,
+        valid_from: validFrom,
+        valid_until: validFrom + Number(draft.valid_days || 1) * 86400000,
+        risk_threshold: Number(draft.risk_threshold),
+      };
+
+      await onSave(updates);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2200);
+    } catch (e) {
+      setErr(e.message || "Mandate güncellenemedi.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mandate-editor fade-in">
+      <div className="me-head">
+        <div>
+          <div className="me-kicker">Kullanıcı Kontrolü</div>
+          <h3>Mandate Kurallarını Onay Öncesi Düzenle</h3>
+          <p>
+            Parser/LLM yalnızca öneri üretir. Nihai harcama yetkisi kullanıcı tarafından
+            gözden geçirilip düzenlenen bu kurallarla aktif olur.
+          </p>
+        </div>
+        <span className="me-pill">pending mandate</span>
+      </div>
+
+      <div className="me-grid">
+        <label className="me-field">
+          <span>Maksimum işlem tutarı</span>
+          <input type="number" min="1" step="1" value={draft.max_amount}
+            onChange={e => setDraft({ ...draft, max_amount: e.target.value })} />
+        </label>
+
+        <label className="me-field">
+          <span>Toplam harcama limiti</span>
+          <input type="number" min="1" step="1" value={draft.total_limit}
+            onChange={e => setDraft({ ...draft, total_limit: e.target.value })} />
+        </label>
+
+        <label className="me-field">
+          <span>Geçerlilik süresi (gün)</span>
+          <input type="number" min="1" max="365" step="1" value={draft.valid_days}
+            onChange={e => setDraft({ ...draft, valid_days: e.target.value })} />
+        </label>
+
+        <label className="me-field">
+          <span>Risk eşiği</span>
+          <input type="number" min="0" max="1" step="0.05" value={draft.risk_threshold}
+            onChange={e => setDraft({ ...draft, risk_threshold: e.target.value })} />
+        </label>
+      </div>
+
+      <div className="me-section">
+        <div className="me-title">İzinli kategoriler</div>
+        <div className="me-cats">
+          {allCategories.map(c => (
+            <button key={"a" + c}
+              className={"me-cat allow " + (draft.allowed_categories.includes(c) ? "active" : "")}
+              onClick={() => toggleList("allowed_categories", c)}>
+              {draft.allowed_categories.includes(c) ? "✓ " : ""}{CAT_TR[c] || categories[c] || c}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="me-section">
+        <div className="me-title">Yasaklı kategoriler</div>
+        <div className="me-cats">
+          {allCategories.map(c => (
+            <button key={"b" + c}
+              className={"me-cat block " + (draft.blocked_categories.includes(c) ? "active" : "")}
+              onClick={() => toggleList("blocked_categories", c)}>
+              {draft.blocked_categories.includes(c) ? "✕ " : ""}{CAT_TR[c] || categories[c] || c}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="me-toggles">
+        <label className="me-toggle">
+          <input type="checkbox" checked={draft.approved_only}
+            onChange={e => setDraft({ ...draft, approved_only: e.target.checked })} />
+          <span>
+            <b>Yalnızca onaylı satıcı</b>
+            <small>Satıcı whitelist/onay kontrolü uygulanır.</small>
+          </span>
+        </label>
+
+        <label className="me-toggle">
+          <input type="checkbox" checked={draft.requires_approval_for_new_merchant}
+            onChange={e => setDraft({ ...draft, requires_approval_for_new_merchant: e.target.checked })} />
+          <span>
+            <b>Yeni satıcıda ek onay</b>
+            <small>Yeni veya düşük güvenli satıcılar step-up akışına düşer.</small>
+          </span>
+        </label>
+      </div>
+
+      {err && <div className="me-error">✕ {err}</div>}
+      {saved && <div className="me-saved">✓ Mandate güncellendi. Onaylanacak kurallar artık bu değerlerdir.</div>}
+
+      <div className="btn-row">
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? <><span className="spin"></span> Kaydediliyor</> : <>Değişiklikleri Kaydet</>}
+        </button>
+        <span className="muted">
+          Kaydetmeden onaylarsanız parser tarafından üretilen ilk kurallar aktif olur.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 
 function AgentRoster({ agents }) {
   return (

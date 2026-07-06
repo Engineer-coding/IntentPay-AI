@@ -2615,6 +2615,195 @@
   }
 }
 
+
+/* Mandate Editor */
+.mandate-editor {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255,255,255,.025);
+  padding: 18px;
+}
+
+.me-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.me-kicker {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--amber);
+  margin-bottom: 6px;
+}
+
+.me-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.me-head p {
+  margin: 6px 0 0;
+  color: var(--mist);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.me-pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--amber);
+  background: rgba(245,158,11,.06);
+  white-space: nowrap;
+}
+
+.me-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.me-field span {
+  display: block;
+  font-size: 12px;
+  color: var(--ghost);
+  margin-bottom: 6px;
+}
+
+.me-field input {
+  width: 100%;
+  background: rgba(0,0,0,.2);
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
+  caret-color: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 12px;
+  font: inherit;
+}
+
+.me-field input::placeholder {
+  color: rgba(255,255,255,.45);
+}
+
+.me-field input:focus {
+  outline: none;
+  border-color: rgba(245,158,11,.55);
+  box-shadow: 0 0 0 3px rgba(245,158,11,.12);
+}
+
+.me-section {
+  margin-top: 16px;
+}
+
+.me-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ghost);
+  margin-bottom: 9px;
+}
+
+.me-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.me-cat {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 11px;
+  background: rgba(255,255,255,.025);
+  color: var(--mist);
+  cursor: pointer;
+}
+
+.me-cat.allow.active {
+  color: var(--approve);
+  background: var(--approve-bg);
+  border-color: rgba(34,197,94,.28);
+}
+
+.me-cat.block.active {
+  color: var(--decline);
+  background: var(--decline-bg);
+  border-color: rgba(239,68,68,.28);
+}
+
+.me-toggles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.me-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255,255,255,.02);
+}
+
+.me-toggle input {
+  margin-top: 3px;
+}
+
+.me-toggle b {
+  display: block;
+  color: var(--ink);
+  margin-bottom: 3px;
+}
+
+.me-toggle small {
+  color: var(--ghost);
+  line-height: 1.4;
+}
+
+.me-error,
+.me-saved {
+  margin-top: 14px;
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-size: 13px;
+}
+
+.me-error {
+  color: var(--decline);
+  background: var(--decline-bg);
+  border: 1px solid rgba(239,68,68,.28);
+}
+
+.me-saved {
+  color: var(--approve);
+  background: var(--approve-bg);
+  border: 1px solid rgba(34,197,94,.28);
+}
+
+@media (max-width: 900px) {
+  .me-head,
+  .me-toggles {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .me-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 </style>
 </head>
 
