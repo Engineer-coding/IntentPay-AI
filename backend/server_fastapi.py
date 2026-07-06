@@ -174,7 +174,7 @@ def analytics() -> dict[str, Any]:
 
 @app.get("/api/persistence")
 def persistence_stats() -> dict[str, Any]:
-    return api_persistence_stats()
+    return api_core.persistence_stats()
 
 
 @app.post("/api/intent/parse")

@@ -23,17 +23,24 @@ class PersistenceAdapter(Protocol):
     def stats(self) -> dict: ...
 
 
-_BACKEND = os.environ.get("PERSISTENCE_BACKEND", "sqlite").strip().lower()
+def _backend_name() -> str:
+    return os.environ.get("PERSISTENCE_BACKEND", "sqlite").strip().lower()
 
 
 def _adapter() -> PersistenceAdapter:
-    if _BACKEND == "sqlite":
+    backend = _backend_name()
+
+    if backend == "sqlite":
         from services import persistence_sqlite
         return persistence_sqlite
 
+    if backend in ("postgres", "postgresql"):
+        from services import persistence_postgres
+        return persistence_postgres
+
     raise RuntimeError(
-        f"Unsupported persistence backend: {_BACKEND}. "
-        "Currently supported: sqlite"
+        f"Unsupported persistence backend: {backend}. "
+        "Currently supported: sqlite, postgres"
     )
 
 
