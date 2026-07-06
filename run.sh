@@ -33,4 +33,4 @@ fi
 PORT="${PORT:-8787}"
 echo "▸ Sunucu hazır:  http://localhost:${PORT}"
 echo "▸ Tarayıcıda bu adresi açın. Durdurmak için Ctrl+C."
-PORT="$PORT" python server.py
+PORT="$PORT" python -m uvicorn server_fastapi:app --host 0.0.0.0 --port "$PORT"
