@@ -250,6 +250,26 @@ değiştirilebilir:
 - balanced
 - lenient
 
+#### Risk Model Card
+
+| Alan | Açıklama |
+|---|---|
+| Model | XGBoost binary classifier |
+| Amaç | İşlemin riskli olup olmadığını tahmin etmek |
+| Veri | Sentetik ödeme ve fraud senaryoları |
+| Özellikler | 11 davranışsal ve mandate-uyumluluk özelliği |
+| Hedef | `risky` / `not risky` |
+| Çıktı | 0–1 arası risk skoru |
+| Model dosyası | `backend/data/risk_model.json` |
+| Eğitim script'i | `backend/train_risk_model.py` |
+| Fallback | Model yüklenemezse deterministik weighted score kullanılır |
+| Sınırlama | Üretim kullanımı için gerçek fraud verisi, kalibrasyon ve düzenli izleme gerekir |
+
+Bu model hackathon/demo ortamı için sentetik veriyle eğitilmiştir. Dolayısıyla AUC
+ve benzeri metrikler gerçek üretim performansı olarak yorumlanmamalıdır. Modelin
+amacı canlı finansal risk kararı vermek değil, AI ajan ödemelerinde policy + risk
+katmanının nasıl birlikte çalışabileceğini göstermektir.
+
 ### HMAC İmzalı Token
 
 Onaylanan işlemler için tek kullanımlık ödeme yetkisi üretilir. Token şu alanlar
@@ -515,6 +535,7 @@ Bu branch kapsamında tamamlanan ana geliştirmeler:
 - guided demo transaction scenarios
 - MCC domain model ve merchant category code simülasyonu
 - MCC tabanlı policy mismatch / blocked-category kontrolleri
+- Risk model card ve sentetik eğitim verisi açıklaması
 - 23/23 otomatik test geçişi
 
 ---
