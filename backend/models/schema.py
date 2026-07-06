@@ -54,6 +54,7 @@ class Merchant:
     trust_score: float                   # 0..1
     is_approved: bool
     country: str = "TR"
+    mcc_code: str = "5999"               # Merchant Category Code
 
 
 @dataclass
