@@ -156,6 +156,9 @@ Testler şu kritik akışları kapsar:
 - risk eşiği profilleri
 - kalıcılık ve restore
 - analytics response alanları
+- standart API response envelope yapısı
+- mandate düzenleme ve onay öncesi kullanıcı kontrolü
+- audit event sourcing zinciri
 
 SQLite test için `.env`:
 
@@ -175,12 +178,14 @@ DATABASE_URL=postgresql://intentpay:intentpay@localhost:5432/intentpay
 ## Uçtan Uca Demo Akışı
 
 1. **Niyet** — Kullanıcı doğal dille ödeme talimatı yazar.
-2. **Mandate** — Talimat yapılandırılmış kurallara dönüşür ve kullanıcı tarafından onaylanır.
-3. **Ajan** — AI ajan simülatörü satın alma senaryosu çalıştırır.
-4. **Değerlendirme** — Policy Engine ve Risk Modeli birlikte çalışır.
-5. **Karar** — Sistem approve, step-up, review veya decline kararı üretir.
-6. **Token** — Onaylanan işlem için HMAC imzalı tek kullanımlık token üretilir.
-7. **Denetim** — Tüm karar zinciri audit log ekranında görünür.
+2. **Mandate** — Talimat yapılandırılmış kurallara dönüşür.
+3. **Kullanıcı Kontrolü** — Kullanıcı mandate kurallarını onaydan önce düzenleyebilir.
+4. **Ajan** — AI ajan simülatörü satın alma senaryosu çalıştırır.
+5. **Değerlendirme** — Policy Engine ve Risk Modeli birlikte çalışır.
+6. **Policy Diff** — Mandate kuralları ile transaction değerleri tablo halinde karşılaştırılır.
+7. **Karar** — Sistem approve, step-up, review veya decline kararı üretir.
+8. **Token** — Onaylanan işlem için HMAC imzalı tek kullanımlık token üretilir.
+9. **Denetim** — Tüm karar zinciri event sourcing görünümüyle audit log ekranında izlenir.
 
 Örnek kullanıcı talimatı:
 
@@ -202,6 +207,46 @@ Bu hafta 5.000 TL'ye kadar ofis sandalyesi al, onaylı satıcıdan, elektronik a
 | Yeni / Riskli Satıcı | Onaysız satıcı veya yeni ajan | Decline / Review |
 | Token Tekrar Kullanımı | Kullanılmış token tekrar denenir | Decline |
 | Prompt Injection | Kuralları yok saydırmaya çalışan talimat | Block / sanitized mandate |
+
+---
+
+## Açıklanabilir Karar Ekranları
+
+### Canlı Policy Diff
+
+Karar ekranı, kullanıcının onayladığı mandate kuralları ile AI ajanının
+oluşturduğu transaction değerlerini tablo halinde karşılaştırır.
+
+Gösterilen başlıca kontroller:
+
+- işlem başına tutar limiti
+- toplam harcama tavanı
+- izinli kategori
+- yasaklı kategori
+- MCC kategori tutarlılığı
+- satıcı onayı
+- yeni satıcı politikası
+- velocity kontrolü
+
+Her satır **PASS / WARNING / FAIL** olarak işaretlenir. Böylece karar yalnızca
+sonuç olarak değil, kural bazında nasıl üretildiğiyle birlikte görünür.
+
+### Editable Mandate Review
+
+Parser veya LLM tarafından üretilen mandate doğrudan aktif hale gelmez.
+Kullanıcı onaydan önce şu alanları düzenleyebilir:
+
+- maksimum işlem tutarı
+- toplam harcama limiti
+- izinli kategoriler
+- yasaklı kategoriler
+- yalnızca onaylı satıcı zorunluluğu
+- yeni satıcıda ek onay
+- geçerlilik süresi
+- risk eşiği
+
+Değişiklikler `/api/mandate/update` endpoint'i ile backend'e kaydedilir. Aktif
+edilen mandate, kullanıcının son onayladığı kurallardan oluşur.
 
 ---
 
@@ -330,13 +375,30 @@ Analytics dashboard audit verisinden gerçek zamanlı özet üretir:
 - risk seviye dağılımı
 - son işlemler
 
-Audit log her işlem için şu zinciri kaydeder:
+Audit log her işlem için event sourcing mantığına yakın bir karar zinciri gösterir:
 
 ```txt
-intent → mandate → transaction request → policy evaluation → risk scoring → decision → token
+Intent Parsed
+↓
+Mandate Created
+↓
+Mandate Updated
+↓
+Mandate Approved
+↓
+Agent Request Generated
+↓
+Policy Evaluated
+↓
+Risk Scored
+↓
+Decision Produced
+↓
+Token Issued / Token Blocked
 ```
 
-Bu yapı kararların sonradan denetlenmesini ve açıklanmasını sağlar.
+Audit ekranında her event için timestamp, input özeti, output özeti ve karar sebebi
+gösterilir. Bu yapı kararların sonradan denetlenmesini ve açıklanmasını sağlar.
 
 ---
 
@@ -356,6 +418,7 @@ Temel endpoint'ler:
 | GET | `/api/analytics` | Dashboard verisi |
 | POST | `/api/intent/parse` | Doğal dil talimatını mandate'e çevirir |
 | POST | `/api/mandate/approve` | Mandate onaylar |
+| POST | `/api/mandate/update` | Pending mandate kurallarını onaydan önce günceller |
 | POST | `/api/agent/request` | Demo ajan işlem isteği üretir |
 | POST | `/api/transaction/evaluate` | İşlemi policy + risk ile değerlendirir |
 | POST | `/api/security/scan` | Prompt injection taraması yapar |
@@ -395,6 +458,7 @@ IntentPay-AI/
     └── services/
         ├── app_state.py           # shared AppState / STATE
         ├── api_core.py            # HTTP bağımsız endpoint orchestration
+        ├── api_response.py        # standart ok/data ve ok/error response envelope
         ├── transaction_service.py # transaction evaluation orchestration
         ├── intent_parser.py       # doğal dil → mandate
         ├── attack_detector.py     # prompt injection savunması
@@ -536,7 +600,12 @@ Bu branch kapsamında tamamlanan ana geliştirmeler:
 - MCC domain model ve merchant category code simülasyonu
 - MCC tabanlı policy mismatch / blocked-category kontrolleri
 - Risk model card ve sentetik eğitim verisi açıklaması
-- 23/23 otomatik test geçişi
+- standart API response envelope
+- canlı Policy Diff görünümü
+- editable mandate review ekranı
+- `/api/mandate/update` endpoint'i
+- event sourcing / audit chain görünümü
+- `mandate_created` ve `mandate_updated` audit event'leri
 
 ---
 
