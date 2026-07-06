@@ -453,62 +453,217 @@ class Handler(BaseHTTPRequestHandler):
                 "explanation": "Kullanıcı ek onayı verdi; işlem onaylandı."}
 
     def _analytics(self) -> dict:
-        """Audit verisinden karar/risk/kural istatistikleri üretir."""
+        """Audit verisinden karar/risk/kural/timeline istatistikleri üretir.
+
+        Geriye dönük uyumluluk için eski alanlar korunur:
+        - total_transactions
+        - decisions
+        - approve_rate
+        - block_rate
+        - avg_risk
+        - risk_buckets
+        - total_authorized
+        - top_rules
+
+        Dashboard için yeni alanlar eklenir:
+        - generated_at
+        - summary
+        - decision_distribution
+        - risk_distribution
+        - recent_transactions
+        """
         txns = STATE.audit.grouped_by_transaction()
+
         decisions = {"approve": 0, "step-up": 0, "review": 0, "decline": 0}
         rule_hits: dict[str, int] = {}
         risk_buckets = {"low": 0, "medium": 0, "high": 0}
         risk_scores: list[float] = []
         total_authorized = 0.0
+        recent_transactions: list[dict] = []
+
+        def pct(count: int, total_count: int) -> float:
+            return round((count / total_count * 100), 1) if total_count else 0.0
+
+        def decision_key(final_decision: str | None) -> str:
+            return {
+                "approve": "approved",
+                "step-up": "step_up",
+                "review": "review",
+                "decline": "denied",
+            }.get(final_decision or "", "unknown")
 
         for it in txns:
             fd = it.get("final_decision")
             if fd in decisions:
                 decisions[fd] += 1
+
+            tx_req = {}
+            risk_info = {}
+            policy_info = {}
+
             for ev in it.get("events", []):
                 d = ev.get("details", {})
-                if ev["event_type"] == "policy_evaluation":
+                et = ev.get("event_type")
+
+                if et == "transaction_request":
+                    tx_req = d
+
+                elif et == "policy_evaluation":
+                    policy_info = d
                     for f in d.get("failed", []):
                         r = f.get("rule", "?")
                         rule_hits[r] = rule_hits.get(r, 0) + 1
                     for w in d.get("warnings", []):
                         r = w.get("rule", "?")
                         rule_hits[r] = rule_hits.get(r, 0) + 1
-                elif ev["event_type"] == "risk_scoring":
+
+                elif et == "risk_scoring":
+                    risk_info = d
                     lvl = d.get("risk_level")
                     if lvl in risk_buckets:
                         risk_buckets[lvl] += 1
                     if isinstance(d.get("risk_score"), (int, float)):
                         risk_scores.append(d["risk_score"])
-                elif ev["event_type"] == "token_issued":
+
+                elif et == "token_issued":
                     total_authorized += d.get("max_amount", 0)
+            
+            if fd not in decisions:
+                continue
+            recent_transactions.append({
+                "transaction_id": it.get("transaction_id"),
+                "timestamp": it.get("timestamp"),
+                "final_decision": fd,
+                "decision_key": decision_key(fd),
+                "merchant": tx_req.get("merchant"),
+                "amount": tx_req.get("amount"),
+                "currency": tx_req.get("currency"),
+                "category": tx_req.get("category"),
+                "cart": tx_req.get("cart"),
+                "risk_score": risk_info.get("risk_score"),
+                "risk_level": risk_info.get("risk_level"),
+                "suggested_action": risk_info.get("suggested_action"),
+                "policy_preliminary_decision": policy_info.get("preliminary_decision"),
+                "failed_rule_count": len(policy_info.get("failed", [])) if policy_info else 0,
+                "warning_count": len(policy_info.get("warnings", [])) if policy_info else 0,
+                "explanation": it.get("explanation"),
+            })
 
         total = sum(decisions.values())
-        approve_rate = (decisions["approve"] / total * 100) if total else 0
-        block_rate = (decisions["decline"] / total * 100) if total else 0
+        approve_rate = pct(decisions["approve"], total)
+        block_rate = pct(decisions["decline"], total)
+        stepup_rate = pct(decisions["step-up"], total)
+        review_rate = pct(decisions["review"], total)
         avg_risk = (sum(risk_scores) / len(risk_scores)) if risk_scores else 0
 
         top_rules = sorted(rule_hits.items(), key=lambda x: -x[1])
         RULE_TR = {
-            "mandate_status": "Mandate durumu", "validity_date": "Geçerlilik süresi",
-            "agent_authorization": "Ajan yetkisi", "token_reuse": "Token tekrar kullanımı",
-            "blocked_category": "Yasaklı kategori", "allowed_category": "İzinli kategori",
-            "amount_limit": "Tutar limiti", "total_spending_limit": "Toplam harcama tavanı",
-            "merchant_approval": "Satıcı onayı", "new_merchant_stepup": "Yeni satıcı kontrolü",
+            "mandate_status": "Mandate durumu",
+            "validity_date": "Geçerlilik süresi",
+            "agent_authorization": "Ajan yetkisi",
+            "token_reuse": "Token tekrar kullanımı",
+            "blocked_category": "Yasaklı kategori",
+            "allowed_category": "İzinli kategori",
+            "amount_limit": "Tutar limiti",
+            "total_spending_limit": "Toplam harcama tavanı",
+            "merchant_approval": "Satıcı onayı",
+            "new_merchant_stepup": "Yeni satıcı kontrolü",
             "velocity_limit": "Hız limiti (velocity)",
         }
+
+        decision_distribution = [
+            {
+                "key": "approved",
+                "source": "approve",
+                "label": "Approved",
+                "label_tr": "Onaylandı",
+                "count": decisions["approve"],
+                "percentage": approve_rate,
+            },
+            {
+                "key": "step_up",
+                "source": "step-up",
+                "label": "Step-up",
+                "label_tr": "Ek Onay",
+                "count": decisions["step-up"],
+                "percentage": stepup_rate,
+            },
+            {
+                "key": "review",
+                "source": "review",
+                "label": "Review",
+                "label_tr": "İnceleme",
+                "count": decisions["review"],
+                "percentage": review_rate,
+            },
+            {
+                "key": "denied",
+                "source": "decline",
+                "label": "Denied",
+                "label_tr": "Reddedildi",
+                "count": decisions["decline"],
+                "percentage": block_rate,
+            },
+        ]
+
+        risk_total = sum(risk_buckets.values())
+        risk_distribution = [
+            {
+                "key": "low",
+                "label": "Low",
+                "label_tr": "Düşük",
+                "count": risk_buckets["low"],
+                "percentage": pct(risk_buckets["low"], risk_total),
+            },
+            {
+                "key": "medium",
+                "label": "Medium",
+                "label_tr": "Orta",
+                "count": risk_buckets["medium"],
+                "percentage": pct(risk_buckets["medium"], risk_total),
+            },
+            {
+                "key": "high",
+                "label": "High",
+                "label_tr": "Yüksek",
+                "count": risk_buckets["high"],
+                "percentage": pct(risk_buckets["high"], risk_total),
+            },
+        ]
+
         return {
+            # eski alanlar: mevcut frontend kırılmasın
             "total_transactions": total,
             "decisions": decisions,
-            "approve_rate": round(approve_rate, 1),
-            "block_rate": round(block_rate, 1),
+            "approve_rate": approve_rate,
+            "block_rate": block_rate,
             "avg_risk": round(avg_risk, 3),
             "risk_buckets": risk_buckets,
             "total_authorized": total_authorized,
-            "top_rules": [{"rule": r, "label": RULE_TR.get(r, r), "count": c}
-                          for r, c in top_rules],
-        }
+            "top_rules": [
+                {"rule": r, "label": RULE_TR.get(r, r), "count": c}
+                for r, c in top_rules
+            ],
 
+            # yeni alanlar: zengin dashboard
+            "generated_at": now_ms(),
+            "summary": {
+                "total_transactions": total,
+                "approved": decisions["approve"],
+                "denied": decisions["decline"],
+                "step_up": decisions["step-up"],
+                "review": decisions["review"],
+                "approval_rate": approve_rate,
+                "denial_rate": block_rate,
+                "step_up_rate": stepup_rate,
+                "review_rate": review_rate,
+                "avg_risk": round(avg_risk, 3),
+                "total_authorized": total_authorized,
+            },
+            "decision_distribution": decision_distribution,
+            "risk_distribution": risk_distribution,
+            "recent_transactions": recent_transactions[:10],
+        }
 
 def main():
     port = int(os.environ.get("PORT", 8787))

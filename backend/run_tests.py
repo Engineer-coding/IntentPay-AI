@@ -243,7 +243,52 @@ def _():
     assert out["security_scan"]["is_attack"] is True, out
     assert len(STATE.mandates) == before, "Saldırıya rağmen mandate oluşturuldu"
 
+@test("Analytics: zengin dashboard response alanları döner")
+def _():
+    fresh_active_mandate()
+    run("safe")
+    run("over_limit")
+    run("stepup_approval")
 
+    h = Handler.__new__(Handler)
+    out = h._analytics()
+
+    # Eski alanlar korunmalı
+    assert "total_transactions" in out, out.keys()
+    assert "decisions" in out, out.keys()
+    assert "approve_rate" in out, out.keys()
+    assert "block_rate" in out, out.keys()
+    assert "risk_buckets" in out, out.keys()
+    assert "top_rules" in out, out.keys()
+
+    # Yeni dashboard alanları
+    assert "generated_at" in out, out.keys()
+    assert "summary" in out, out.keys()
+    assert "decision_distribution" in out, out.keys()
+    assert "risk_distribution" in out, out.keys()
+    assert "recent_transactions" in out, out.keys()
+
+    summary = out["summary"]
+    assert summary["total_transactions"] >= 3, summary
+    assert "approved" in summary, summary
+    assert "denied" in summary, summary
+    assert "step_up" in summary, summary
+    assert "approval_rate" in summary, summary
+    assert "step_up_rate" in summary, summary
+
+    keys = {x["key"] for x in out["decision_distribution"]}
+    assert {"approved", "denied", "step_up", "review"}.issubset(keys), keys
+
+    risk_keys = {x["key"] for x in out["risk_distribution"]}
+    assert {"low", "medium", "high"}.issubset(risk_keys), risk_keys
+
+    recent = out["recent_transactions"]
+    assert isinstance(recent, list), type(recent)
+    assert len(recent) > 0, recent
+    assert "transaction_id" in recent[0], recent[0]
+    assert "decision_key" in recent[0], recent[0]
+    assert "risk_level" in recent[0], recent[0]
+    
 # --------------------------------------------------------------------------- #
 #  Çalıştır + özet
 # --------------------------------------------------------------------------- #
