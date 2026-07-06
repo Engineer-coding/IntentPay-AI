@@ -49,6 +49,10 @@ const RULE_TR = {
   merchant_approval: "Satıcı onayı",
   new_merchant_stepup: "Yeni satıcı kontrolü",
   velocity_limit: "Hız limiti (velocity)",
+  mcc_category_consistency: "MCC kategori tutarlılığı",
+  mcc_category_mismatch: "MCC kategori uyumsuzluğu",
+  mcc_blocked_category: "MCC yasaklı kategori",
+  mcc_unknown: "Bilinmeyen MCC kodu",
 };
 
 const EXAMPLES = [
@@ -598,7 +602,7 @@ function App() {
               title="Policy Engine → Risk Modeli → Karar"
               sub="Deterministik kural kontrolü ve makine öğrenmesi risk skoru birleştirilir.">
               <Pipeline state={pipeline} />
-              {evalResult && <ResultView ev={evalResult} />}
+              {evalResult && <ResultView ev={evalResult} mandate={mandate} />}
               {evalResult?.needs_stepup && (
                 <StepupDialog resolved={stepupResolved} onResolve={resolveStepup} />
               )}
@@ -861,7 +865,273 @@ function Pipeline({ state }) {
   );
 }
 
-function ResultView({ ev }) {
+
+function normalizeRuleSet(pol) {
+  const passed = new Set(pol?.passed_rules || []);
+  const failed = new Set((pol?.failed_rules || []).map(x => x.rule || x));
+  const warned = new Set((pol?.warnings || []).map(x => x.rule || x));
+
+  const failedByRule = {};
+  (pol?.failed_rules || []).forEach(x => {
+    if (x.rule) failedByRule[x.rule] = x;
+  });
+
+  const warningByRule = {};
+  (pol?.warnings || []).forEach(x => {
+    if (x.rule) warningByRule[x.rule] = x;
+  });
+
+  return { passed, failed, warned, failedByRule, warningByRule };
+}
+
+function policyStatus(rule, rules, fallback = "pass") {
+  if (rules.failed.has(rule)) return "fail";
+  if (rules.warned.has(rule)) return "warn";
+  if (rules.passed.has(rule)) return "pass";
+  return fallback;
+}
+
+function statusLabel(status) {
+  return status === "fail" ? "FAIL"
+    : status === "warn" ? "WARNING"
+      : "PASS";
+}
+
+function statusIcon(status) {
+  return status === "fail" ? "✕"
+    : status === "warn" ? "!"
+      : "✓";
+}
+
+function extractMccInfo(pol) {
+  const failed = pol?.failed_rules || [];
+  const warnings = pol?.warnings || [];
+  const all = [...failed, ...warnings];
+
+  for (const item of all) {
+    if (item?.mcc) return item.mcc;
+  }
+
+  return null;
+}
+
+function buildPolicyDiffRows(ev, mandate) {
+  const tx = ev.transaction || {};
+  const pol = ev.policy_result || {};
+  const rules = normalizeRuleSet(pol);
+  const m = mandate || ev.mandate || {};
+  const mcc = extractMccInfo(pol);
+
+  const txAmount = Number(tx.amount || 0);
+  const maxAmount = Number(m.max_amount || 0);
+  const totalLimit = Number(m.total_limit || 0);
+  const spentSoFar = Number(m.spent_so_far || 0);
+  const projectedTotal = spentSoFar + txAmount;
+
+  const allowedCats = m.allowed_categories || [];
+  const blockedCats = m.blocked_categories || [];
+  const allowedMerchants = m.allowed_merchants || [];
+
+  const merchantName = tx.merchant_name || ev.merchant?.merchant_name || tx.merchant_id || "-";
+  const merchantApproved =
+    typeof ev.merchant?.is_approved === "boolean"
+      ? ev.merchant.is_approved
+      : allowedMerchants.includes("__approved_only__")
+        ? "onay kontrolü uygulandı"
+        : "serbest";
+
+  const rows = [];
+
+  rows.push({
+    key: "amount_limit",
+    rule: "İşlem başına limit",
+    mandate: maxAmount ? `≤ ${fmtTL(maxAmount)}` : "Limit yok",
+    transaction: fmtTL(txAmount),
+    status: policyStatus(
+      "amount_limit",
+      rules,
+      maxAmount && txAmount > maxAmount ? "fail" : "pass"
+    ),
+    detail: maxAmount && txAmount > maxAmount
+      ? "İşlem tutarı mandate limitini aşıyor."
+      : "İşlem tutarı mandate limiti içinde.",
+  });
+
+  rows.push({
+    key: "total_spending_limit",
+    rule: "Toplam harcama tavanı",
+    mandate: totalLimit ? `≤ ${fmtTL(totalLimit)}` : "Tavan yok",
+    transaction: `${fmtTL(spentSoFar)} + ${fmtTL(txAmount)} = ${fmtTL(projectedTotal)}`,
+    status: policyStatus(
+      "total_spending_limit",
+      rules,
+      totalLimit && projectedTotal > totalLimit ? "fail" : "pass"
+    ),
+    detail: totalLimit && projectedTotal > totalLimit
+      ? "Bu işlem toplam harcama tavanını aşar."
+      : "Toplam harcama tavanı korunuyor.",
+  });
+
+  rows.push({
+    key: "allowed_category",
+    rule: "İzin verilen kategori",
+    mandate: allowedCats.length
+      ? allowedCats.map(c => CAT_TR[c] || c).join(", ")
+      : "Kategori kısıtı yok",
+    transaction: CAT_TR[tx.category] || tx.category || "-",
+    status: policyStatus(
+      "allowed_category",
+      rules,
+      allowedCats.length && !allowedCats.includes(tx.category) ? "fail" : "pass"
+    ),
+    detail: allowedCats.length
+      ? "Transaction kategorisi izinli kategori listesiyle karşılaştırıldı."
+      : "Mandate izinli kategori kısıtı tanımlamıyor.",
+  });
+
+  rows.push({
+    key: "blocked_category",
+    rule: "Yasaklı kategori",
+    mandate: blockedCats.length
+      ? blockedCats.map(c => CAT_TR[c] || c).join(", ")
+      : "Yasaklı kategori yok",
+    transaction: CAT_TR[tx.category] || tx.category || "-",
+    status: policyStatus(
+      "blocked_category",
+      rules,
+      blockedCats.includes(tx.category) ? "fail" : "pass"
+    ),
+    detail: blockedCats.includes(tx.category)
+      ? "Transaction kategorisi mandate tarafından yasaklanmış."
+      : "Transaction kategorisi yasaklı listede değil.",
+  });
+
+  const mccRule =
+    rules.failed.has("mcc_blocked_category") ? "mcc_blocked_category"
+      : rules.warned.has("mcc_category_mismatch") ? "mcc_category_mismatch"
+        : rules.warned.has("mcc_unknown") ? "mcc_unknown"
+          : "mcc_category_consistency";
+
+  rows.push({
+    key: mccRule,
+    rule: "MCC kategori kontrolü",
+    mandate: blockedCats.length || allowedCats.length
+      ? [
+        allowedCats.length ? `izinli: ${allowedCats.map(c => CAT_TR[c] || c).join(", ")}` : null,
+        blockedCats.length ? `yasaklı: ${blockedCats.map(c => CAT_TR[c] || c).join(", ")}` : null,
+      ].filter(Boolean).join(" · ")
+      : "Kategori policy",
+    transaction: mcc
+      ? `${mcc.mcc_code || "-"} · ${mcc.mcc_label || "MCC"} · ${CAT_TR[mcc.category] || mcc.category || "-"}`
+      : "MCC sinyali yok",
+    status: policyStatus(mccRule, rules, "pass"),
+    detail:
+      rules.failedByRule[mccRule]?.reason ||
+      rules.warningByRule[mccRule]?.reason ||
+      "Merchant MCC kategorisi transaction ve mandate kurallarıyla tutarlı.",
+  });
+
+  rows.push({
+    key: "merchant_approval",
+    rule: "Satıcı onayı",
+    mandate: allowedMerchants.includes("__approved_only__")
+      ? "Sadece onaylı satıcı"
+      : allowedMerchants.length
+        ? allowedMerchants.join(", ")
+        : "Satıcı kısıtı yok",
+    transaction: `${merchantName} · ${merchantApproved === true ? "approved" : merchantApproved === false ? "not approved" : merchantApproved}`,
+    status: policyStatus("merchant_approval", rules, "pass"),
+    detail:
+      rules.failedByRule.merchant_approval?.reason ||
+      "Satıcı mandate içindeki onay politikasına göre değerlendirildi.",
+  });
+
+  rows.push({
+    key: "new_merchant_stepup",
+    rule: "Yeni satıcı politikası",
+    mandate: m.requires_approval_for_new_merchant
+      ? "Yeni satıcı için ek onay gerekli"
+      : "Yeni satıcı serbest",
+    transaction: merchantName,
+    status: policyStatus("new_merchant_stepup", rules, "pass"),
+    detail:
+      rules.warningByRule.new_merchant_stepup?.reason ||
+      "Yeni/onaysız satıcı kontrolü uygulandı.",
+  });
+
+  rows.push({
+    key: "velocity_limit",
+    rule: "Velocity kontrolü",
+    mandate: "Kısa sürede yoğun işlem engellenir",
+    transaction: `${ev.velocity_count || 0} önceki işlem / 60 sn`,
+    status: policyStatus(
+      "velocity_limit",
+      rules,
+      (ev.velocity_count || 0) >= 3 ? "warn" : "pass"
+    ),
+    detail: (ev.velocity_count || 0) >= 3
+      ? "Kısa sürede çok sayıda işlem risk sinyali olarak değerlendirildi."
+      : "İşlem hızı normal aralıkta.",
+  });
+
+  return rows;
+}
+
+function PolicyDiffTable({ ev, mandate }) {
+  const rows = buildPolicyDiffRows(ev, mandate);
+  const counts = rows.reduce((acc, r) => {
+    acc[r.status] = (acc[r.status] || 0) + 1;
+    return acc;
+  }, { pass: 0, warn: 0, fail: 0 });
+
+  return (
+    <div className="policy-diff fade-in">
+      <div className="pd-head">
+        <div>
+          <div className="pd-kicker">Canlı Policy Diff</div>
+          <h3>Mandate ↔ Transaction Karşılaştırması</h3>
+          <p>
+            Karar, kullanıcının onayladığı mandate kuralları ile AI ajanının işlem
+            isteği karşılaştırılarak üretilir.
+          </p>
+        </div>
+        <div className="pd-score">
+          <span className="ok">✓ {counts.pass || 0}</span>
+          <span className="warn">! {counts.warn || 0}</span>
+          <span className="bad">✕ {counts.fail || 0}</span>
+        </div>
+      </div>
+
+      <div className="pd-table">
+        <div className="pd-row pd-row-head">
+          <div>Kural</div>
+          <div>Mandate</div>
+          <div>Transaction</div>
+          <div>Durum</div>
+        </div>
+
+        {rows.map(row => (
+          <div className={"pd-row " + row.status} key={row.key}>
+            <div>
+              <b>{row.rule}</b>
+              <small>{row.detail}</small>
+            </div>
+            <div>{row.mandate}</div>
+            <div>{row.transaction}</div>
+            <div>
+              <span className={"pd-status " + row.status}>
+                {statusIcon(row.status)} {statusLabel(row.status)}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+function ResultView({ ev, mandate }) {
   const v = ev.final_decision;
   return (
     <div className="fade-in">
@@ -880,6 +1150,8 @@ function ResultView({ ev }) {
           )}
         </div>
       </div>
+
+      <PolicyDiffTable ev={ev} mandate={mandate} />
 
       <RiskCard risk={ev.risk_result} />
 
