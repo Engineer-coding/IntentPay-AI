@@ -136,7 +136,7 @@ bash run.sh test
 Beklenen sonuç:
 
 ```txt
-SONUÇ: 21/21 test geçti
+SONUÇ: 23/23 test geçti
 ```
 
 Testler şu kritik akışları kapsar:
@@ -147,6 +147,8 @@ Testler şu kritik akışları kapsar:
 - token replay engeli
 - limit aşımı
 - yasaklı kategori reddi
+- MCC kategori uyumsuzluğu step-up sinyali
+- MCC üzerinden yasaklı kategori reddi
 - step-up onayı ve reddi
 - velocity kontrolü
 - prompt injection tespiti
@@ -195,6 +197,7 @@ Bu hafta 5.000 TL'ye kadar ofis sandalyesi al, onaylı satıcıdan, elektronik a
 | Güvenli İşlem | Limit içi, izinli kategori, güvenilir satıcı | Approve + token |
 | Limit Aşımı | Tutar limiti veya toplam tavan aşılır | Step-up / Decline |
 | Kategori İhlali | Yasaklı kategori denenir | Decline |
+| MCC Uyumsuzluğu | İşlem kategorisi ile satıcının MCC kategorisi çelişir | Step-up / Decline |
 | Ek Onay Gerekli | Tutar limiti az miktarda aşılır | Step-up |
 | Yeni / Riskli Satıcı | Onaysız satıcı veya yeni ajan | Decline / Review |
 | Token Tekrar Kullanımı | Kullanılmış token tekrar denenir | Decline |
@@ -229,6 +232,8 @@ Policy engine şu kuralları kontrol eder:
 - token tekrar kullanımı
 - yasaklı kategori
 - izinli kategori
+- MCC kategori tutarlılığı
+- MCC üzerinden yasaklı kategori kontrolü
 - işlem başına tutar limiti
 - toplam harcama tavanı
 - satıcı onayı
@@ -263,6 +268,26 @@ Token kurcalanırsa imza doğrulaması başarısız olur ve redeem reddedilir.
 
 Kısa sürede çok sayıda işlem bot/fraud sinyali olarak değerlendirilir. Bu sinyal
 hem policy engine hem risk modeli tarafında kullanılır.
+
+### MCC Simülasyonu
+
+Kartlı ödeme dünyasında satıcı kategorisi genellikle MCC (Merchant Category Code)
+üzerinden gelir. IntentPay AI demo ortamında satıcılara MCC kodu atanır ve bu kod
+sistem içi kategoriye çevrilir.
+
+Örnek eşleşmeler:
+
+| MCC | Anlam | Sistem Kategorisi |
+|---|---|---|
+| 5943 | Office Supplies | `office_supplies` |
+| 5732 | Electronics | `electronics` |
+| 5816 | Digital Goods | `gift_cards` |
+| 5999 | Miscellaneous | `miscellaneous` |
+
+Policy engine, transaction kategorisi ile satıcının MCC kategorisini karşılaştırır.
+Kategori uyumsuzluğu varsa işlem doğrudan sessizce onaylanmaz; step-up/review
+sinyali üretir. MCC'nin işaret ettiği kategori mandate tarafından yasaklanmışsa
+işlem decline edilir.
 
 ### Step-up Onay Akışı
 
@@ -354,6 +379,7 @@ IntentPay-AI/
         ├── intent_parser.py       # doğal dil → mandate
         ├── attack_detector.py     # prompt injection savunması
         ├── policy_engine.py       # deterministik policy kuralları
+        ├── mcc.py                 # MCC kategori eşleme ve açıklama helper'ları
         ├── risk_model.py          # risk skoru + fallback
         ├── decision_engine.py     # policy + risk → nihai karar
         ├── token_sim.py           # HMAC token simülasyonu
@@ -487,7 +513,9 @@ Bu branch kapsamında tamamlanan ana geliştirmeler:
 - realtime analytics dashboard
 - audit explainability view
 - guided demo transaction scenarios
-- 21/21 otomatik test geçişi
+- MCC domain model ve merchant category code simülasyonu
+- MCC tabanlı policy mismatch / blocked-category kontrolleri
+- 23/23 otomatik test geçişi
 
 ---
 
