@@ -20,8 +20,7 @@ from services.agent_simulator import build_request, list_scenarios
 from services.attack_detector import scan_text, sanitize_mandate
 from services import persistence
 
-# Mevcut global state korunur. Bu aşamada storage/state refactor yapmıyoruz.
-import server as core
+from services.app_state import STATE, DEFAULT_USER
 
 
 RULE_TR = {
@@ -41,28 +40,28 @@ RULE_TR = {
 
 def bootstrap() -> dict:
     return {
-        "users": {k: asdict(v) for k, v in core.STATE.users.items()},
+        "users": {k: asdict(v) for k, v in STATE.users.items()},
         "agents": {
             k: {**asdict(v), "age_days": round(v.age_days, 1)}
-            for k, v in core.STATE.agents.items()
+            for k, v in STATE.agents.items()
         },
-        "merchants": {k: asdict(v) for k, v in core.STATE.merchants.items()},
-        "products": core.STATE.products,
+        "merchants": {k: asdict(v) for k, v in STATE.merchants.items()},
+        "products": STATE.products,
         "scenarios": list_scenarios(),
-        "default_user": core.DEFAULT_USER,
+        "default_user": DEFAULT_USER,
         "categories": __import__("models.schema", fromlist=["CATEGORIES"]).CATEGORIES,
     }
 
 
 def audit() -> dict:
     return {
-        "transactions": core.STATE.audit.grouped_by_transaction(),
-        "raw": core.STATE.audit.all(),
+        "transactions": STATE.audit.grouped_by_transaction(),
+        "raw": STATE.audit.all(),
     }
 
 
 def tokens() -> dict:
-    return {"tokens": core.STATE.tokens.all()}
+    return {"tokens": STATE.tokens.all()}
 
 
 def persistence_stats() -> dict:
@@ -71,19 +70,19 @@ def persistence_stats() -> dict:
 
 def parse_intent(body: dict) -> dict:
     text = (body.get("text") or "").strip()
-    user_id = body.get("user_id", core.DEFAULT_USER)
+    user_id = body.get("user_id", DEFAULT_USER)
 
     if not text:
         return {"error": "Talimat metni boş olamaz."}
     if len(text) > 2000:
         return {"error": "Talimat çok uzun (en fazla 2000 karakter)."}
-    if user_id not in core.STATE.users:
+    if user_id not in STATE.users:
         return {"error": f"Bilinmeyen kullanıcı: {user_id}"}
 
     scan = scan_text(text)
 
     if scan["is_attack"]:
-        core.STATE.audit.record("security:" + str(now_ms()), "intent_blocked", {
+        STATE.audit.record("security:" + str(now_ms()), "intent_blocked", {
             "original_intent": text,
             "security_scan": scan,
             "reason": "Prompt injection/manipülasyon tespit edildiği için mandate oluşturulmadı.",
@@ -105,7 +104,7 @@ def parse_intent(body: dict) -> dict:
         if not k.startswith("_")
     })
 
-    core.STATE.mandates[mandate.mandate_id] = mandate
+    STATE.mandates[mandate.mandate_id] = mandate
     persistence.save_mandate(
         mandate.mandate_id,
         mandate.user_id,
@@ -114,7 +113,7 @@ def parse_intent(body: dict) -> dict:
         now_ms(),
     )
 
-    core.STATE.audit.record("mandate:" + mandate.mandate_id, "intent_parsed", {
+    STATE.audit.record("mandate:" + mandate.mandate_id, "intent_parsed", {
         "original_intent": text,
         "parse_mode": result["parse_mode"],
         "security_scan": scan,
@@ -126,7 +125,7 @@ def parse_intent(body: dict) -> dict:
 
 def approve_mandate(body: dict) -> dict:
     mandate_id = body.get("mandate_id")
-    mandate = core.STATE.mandates.get(mandate_id)
+    mandate = STATE.mandates.get(mandate_id)
 
     if not mandate:
         return {"error": "Mandate bulunamadı."}
@@ -138,7 +137,7 @@ def approve_mandate(body: dict) -> dict:
             "note": "Mandate zaten aktif.",
         }
 
-    for m in core.STATE.mandates.values():
+    for m in STATE.mandates.values():
         if m.user_id == mandate.user_id and m.status == "active":
             m.status = "revoked"
             persistence.save_mandate(
@@ -158,7 +157,7 @@ def approve_mandate(body: dict) -> dict:
         now_ms(),
     )
 
-    core.STATE.audit.record("mandate:" + mandate.mandate_id, "mandate_approved", {
+    STATE.audit.record("mandate:" + mandate.mandate_id, "mandate_approved", {
         "approved_at": now_ms(),
         "mandate_id": mandate.mandate_id,
     })
@@ -168,12 +167,12 @@ def approve_mandate(body: dict) -> dict:
 
 def agent_request(body: dict) -> dict:
     scenario = body.get("scenario", "safe")
-    user_id = body.get("user_id", core.DEFAULT_USER)
+    user_id = body.get("user_id", DEFAULT_USER)
 
     if scenario not in [s["key"] for s in list_scenarios()]:
         return {"error": f"Bilinmeyen senaryo: {scenario}"}
 
-    reuse = core.STATE.last_issued_token_id if scenario == "token_reuse" else None
+    reuse = STATE.last_issued_token_id if scenario == "token_reuse" else None
     return build_request(scenario, user_id, reused_token_id=reuse)
 
 
@@ -207,17 +206,17 @@ def set_risk_threshold(body: dict) -> dict:
 
 
 def tamper_token(body: dict) -> dict:
-    token_id = body.get("token_id") or core.STATE.last_issued_token_id
+    token_id = body.get("token_id") or STATE.last_issued_token_id
 
     if not token_id:
         return {"error": "Kurcalanacak token yok. Önce onaylı bir işlem çalıştırın."}
 
     new_amount = float(body.get("new_amount", 999999))
-    result = core.STATE.tokens.tamper_test(token_id, new_amount)
+    result = STATE.tokens.tamper_test(token_id, new_amount)
 
     if result.get("ok"):
-        token = core.STATE.tokens.get(token_id)
-        core.STATE.audit.record(
+        token = STATE.tokens.get(token_id)
+        STATE.audit.record(
             token.transaction_id if token else "tamper",
             "token_tamper_test",
             {
@@ -235,51 +234,51 @@ def tamper_token(body: dict) -> dict:
 def resolve_stepup(body: dict) -> dict:
     tx_id = body.get("transaction_id")
     approved = body.get("approved", False)
-    pending = core.STATE.pending_stepups.get(tx_id)
+    pending = STATE.pending_stepups.get(tx_id)
 
     if not pending:
         return {"error": "Bekleyen step-up işlemi bulunamadı."}
 
     if not approved:
-        core.STATE.audit.record(tx_id, "stepup_resolved", {
+        STATE.audit.record(tx_id, "stepup_resolved", {
             "resolution": "rejected",
             "final_decision": "decline",
             "explanation": "Kullanıcı ek onayı reddetti; işlem iptal edildi.",
         })
-        core.STATE.audit.record(tx_id, "decision", {
+        STATE.audit.record(tx_id, "decision", {
             "final_decision": "decline",
             "explanation": "Kullanıcı ek onayı reddetti; işlem iptal edildi.",
         })
-        del core.STATE.pending_stepups[tx_id]
+        del STATE.pending_stepups[tx_id]
         return {
             "final_decision": "decline",
             "explanation": "Kullanıcı ek onayı reddetti; işlem iptal edildi.",
         }
 
-    tx = core.STATE.transactions[tx_id]
-    mandate = core.STATE.active_mandate_for(tx.user_id)
-    merchant = core.STATE.merchants.get(tx.merchant_id)
+    tx = STATE.transactions[tx_id]
+    mandate = STATE.active_mandate_for(tx.user_id)
+    merchant = STATE.merchants.get(tx.merchant_id)
 
-    token = core.STATE.tokens.issue(tx, mandate, merchant)
-    core.STATE.last_issued_token_id = token.token_id
+    token = STATE.tokens.issue(tx, mandate, merchant)
+    STATE.last_issued_token_id = token.token_id
 
     mandate.spent_so_far += tx.amount
-    core.STATE.tokens.redeem(token.token_id)
+    STATE.tokens.redeem(token.token_id)
 
     token_dict = asdict(token)
 
-    core.STATE.audit.record(tx_id, "stepup_resolved", {
+    STATE.audit.record(tx_id, "stepup_resolved", {
         "resolution": "approved",
         "final_decision": "approve",
         "explanation": "Kullanıcı ek onayı verdi; işlem onaylandı.",
     })
-    core.STATE.audit.record(tx_id, "token_issued", token_dict)
-    core.STATE.audit.record(tx_id, "decision", {
+    STATE.audit.record(tx_id, "token_issued", token_dict)
+    STATE.audit.record(tx_id, "decision", {
         "final_decision": "approve",
         "explanation": "Kullanıcı ek onayı verdi; işlem onaylandı.",
     })
 
-    del core.STATE.pending_stepups[tx_id]
+    del STATE.pending_stepups[tx_id]
 
     return {
         "final_decision": "approve",
@@ -289,7 +288,7 @@ def resolve_stepup(body: dict) -> dict:
 
 
 def analytics() -> dict:
-    txns = core.STATE.audit.grouped_by_transaction()
+    txns = STATE.audit.grouped_by_transaction()
 
     decisions = {"approve": 0, "step-up": 0, "review": 0, "decline": 0}
     rule_hits: dict[str, int] = {}

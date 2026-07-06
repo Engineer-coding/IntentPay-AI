@@ -19,8 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-import server as core
-from services import api_core
+from models.schema import now_ms
+from services import api_core, persistence
+from services.app_state import STATE
 
 
 app = FastAPI(
@@ -127,11 +128,11 @@ class RiskThresholdRequest(APIRequest):
 @app.on_event("startup")
 def startup() -> None:
     reset = os.environ.get("RESET_DB", "0") == "1"
-    core.persistence.init_db(reset=reset)
+    persistence.init_db(reset=reset)
 
     if not reset:
-        core.STATE.restore()
-        st = core.persistence.stats()
+        STATE.restore()
+        st = persistence.stats()
         print(
             f"Kalıcı durum yüklendi: {st['mandates']} mandate, "
             f"{st['transactions']} işlem, {st['tokens']} token, "
@@ -139,14 +140,14 @@ def startup() -> None:
         )
 
     print("IntentPay AI FastAPI backend çalışıyor.")
-    print(f"Veritabanı: {core.persistence.stats()['db_path']}")
+    print(f"Veritabanı: {persistence.stats()['db_path']}")
 
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "time": core.now_ms(),
+        "time": now_ms(),
         "server": "fastapi",
     }
 
@@ -173,7 +174,7 @@ def analytics() -> dict[str, Any]:
 
 @app.get("/api/persistence")
 def persistence_stats() -> dict[str, Any]:
-    return api_core.persistence_stats()
+    return api_persistence_stats()
 
 
 @app.post("/api/intent/parse")
