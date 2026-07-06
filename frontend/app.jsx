@@ -137,9 +137,19 @@ const EVENT_TR = {
     desc: "Doğal dil talimatı mandate kurallarına çevrilir.",
     tone: "info",
   },
+  mandate_created: {
+    label: "Mandate Created",
+    desc: "Parser çıktısı uygulanabilir yetki kurallarına dönüştürüldü.",
+    tone: "policy",
+  },
+  mandate_updated: {
+    label: "Mandate Updated",
+    desc: "Kullanıcı onaydan önce mandate kurallarını düzenledi.",
+    tone: "policy",
+  },
   mandate_approved: {
-    label: "Mandate Onayı",
-    desc: "Kullanıcı kuralları onaylayıp aktif hale getirir.",
+    label: "Mandate Approved",
+    desc: "Kullanıcı nihai kuralları onaylayıp aktif hale getirir.",
     tone: "token",
   },
   intent_blocked: {
@@ -174,6 +184,7 @@ function App() {
   const [demoLog, setDemoLog] = useState([]);
   const [auditOpen, setAuditOpen] = useState(false);
   const [audit, setAudit] = useState([]);
+  const [auditRaw, setAuditRaw] = useState([]);
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [securityScan, setSecurityScan] = useState(null);   // mandate parse güvenlik taraması
   const [analytics, setAnalytics] = useState(null);          // dashboard verisi
@@ -461,6 +472,7 @@ function App() {
   const loadAudit = async ({ scroll = true } = {}) => {
     const d = await apiFetch("/api/audit");
     setAudit(d.transactions || []);
+    setAuditRaw(d.raw || []);
     setAuditOpen(true);
     setStep(6);
 
@@ -651,7 +663,7 @@ function App() {
         {analytics && <AnalyticsView id="analytics" data={analytics} onRefresh={loadAnalytics} />}
 
         {/* STEP 6 — AUDIT */}
-        {auditOpen && <AuditView id="audit" items={audit} onRefresh={loadAudit} />}
+        {auditOpen && <AuditView id="audit" items={audit} raw={auditRaw} onRefresh={loadAudit} />}
 
         <div className="foot">
           IntentPay AI · Hackathon MVP · Tüm ödeme işlemleri simülasyondur — gerçek kart/banka entegrasyonu yoktur.
@@ -1484,7 +1496,256 @@ function PolicyBreakdown({ pol }) {
   );
 }
 
-function AuditView({ id, items, onRefresh }) {
+
+function timeFromMs(ts) {
+  if (!ts) return "—";
+  try {
+    return new Date(ts).toLocaleTimeString("tr-TR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function auditEventSummary(e) {
+  const d = e.details || {};
+
+  if (e.event_type === "intent_parsed") {
+    return {
+      input: d.original_intent || "Doğal dil talimatı",
+      output: d.parse_mode ? `Parser modu: ${d.parse_mode}` : "Mandate önerisi üretildi",
+      reason: d.security_scan?.summary || "Talimat güvenlik taramasından geçti.",
+    };
+  }
+
+  if (e.event_type === "mandate_created") {
+    const s = d.summary || {};
+    return {
+      input: `User: ${d.user_id || "-"}`,
+      output: `Limit: ${fmtTL(s.max_amount || 0)} · Toplam: ${fmtTL(s.total_limit || 0)} · Durum: ${s.status || "-"}`,
+      reason: d.reason || "Mandate oluşturuldu.",
+    };
+  }
+
+  if (e.event_type === "mandate_updated") {
+    const keys = Object.keys(d.updates || {});
+    return {
+      input: keys.length ? keys.join(", ") : "Kural düzenlemesi",
+      output: `Güncellenen alan: ${keys.length}`,
+      reason: "Kullanıcı onaydan önce nihai yetki kurallarını değiştirdi.",
+    };
+  }
+
+  if (e.event_type === "mandate_approved") {
+    return {
+      input: d.mandate_id || "Pending mandate",
+      output: "Mandate active",
+      reason: "Kullanıcı nihai kuralları onayladı.",
+    };
+  }
+
+  if (e.event_type === "transaction_request") {
+    return {
+      input: `${d.agent_id || "agent"} → ${d.merchant || "merchant"}`,
+      output: `${fmtTL(d.amount || 0)} · ${CAT_TR[d.category] || d.category || "-"}`,
+      reason: d.note || d.cart || "AI ajan ödeme isteği oluşturdu.",
+    };
+  }
+
+  if (e.event_type === "policy_evaluation") {
+    const failed = d.failed || d.failed_rules || [];
+    const warnings = d.warnings || [];
+    return {
+      input: "Mandate rules ↔ transaction",
+      output: `${d.preliminary_decision || "-"} · ${failed.length} fail · ${warnings.length} warning`,
+      reason: failed[0]?.reason || warnings[0]?.reason || "Policy kuralları başarıyla geçti.",
+    };
+  }
+
+  if (e.event_type === "risk_scoring") {
+    return {
+      input: "Transaction features",
+      output: `Risk ${Number(d.risk_score || 0).toFixed(2)} · ${d.risk_level || "-"}`,
+      reason: (d.top_risk_factors || [])[0]?.factor || "Risk modeli skoru üretildi.",
+    };
+  }
+
+  if (e.event_type === "decision") {
+    return {
+      input: "Policy result + risk score",
+      output: VERDICT_TR[d.final_decision] || d.final_decision || "-",
+      reason: d.explanation || "Nihai karar üretildi.",
+    };
+  }
+
+  if (e.event_type === "token_issued") {
+    return {
+      input: d.transaction_id || "Approved transaction",
+      output: d.token_id || "Token issued",
+      reason: `Tek kullanımlık ödeme yetkisi üretildi. Limit: ${fmtTL(d.max_amount || 0)}`,
+    };
+  }
+
+  if (e.event_type === "intent_blocked") {
+    return {
+      input: d.original_intent || "Talimat",
+      output: "Mandate oluşturulmadı",
+      reason: d.reason || "Manipülasyon denemesi engellendi.",
+    };
+  }
+
+  return {
+    input: e.transaction_id || "-",
+    output: e.event_type,
+    reason: "Audit olayı kaydedildi.",
+  };
+}
+
+function eventStageLabel(eventType) {
+  const labels = {
+    intent_parsed: "Intent Parsed",
+    mandate_created: "Mandate Created",
+    mandate_updated: "Mandate Updated",
+    mandate_approved: "Mandate Approved",
+    transaction_request: "Agent Request Generated",
+    policy_evaluation: "Policy Evaluated",
+    risk_scoring: "Risk Scored",
+    decision: "Decision Produced",
+    token_issued: "Token Issued",
+    intent_blocked: "Intent Blocked",
+  };
+
+  return labels[eventType] || eventType;
+}
+
+function EventSourcingChain({ raw, transactions }) {
+  const wanted = [
+    "intent_parsed",
+    "mandate_created",
+    "mandate_updated",
+    "mandate_approved",
+    "transaction_request",
+    "policy_evaluation",
+    "risk_scoring",
+    "decision",
+    "token_issued",
+    "intent_blocked",
+  ];
+
+  const events = [...(raw || [])]
+    .filter(e => wanted.includes(e.event_type))
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  const latestEvents = events.slice(-18);
+
+  const lastTx = (transactions || [])[0];
+  const tokenBlocked =
+    lastTx &&
+    lastTx.final_decision &&
+    lastTx.final_decision !== "approve" &&
+    !(lastTx.events || []).some(e => e.event_type === "token_issued");
+
+  return (
+    <div className="event-source">
+      <div className="es-head">
+        <div>
+          <div className="es-kicker">Event Sourcing / Audit Chain</div>
+          <h3>Karar Zinciri</h3>
+          <p>
+            Her adım append-only audit event’i olarak kaydedilir. Zincir; input,
+            output ve karar sebebini geriye dönük denetlenebilir hale getirir.
+          </p>
+        </div>
+        <span className="es-count">{events.length} event</span>
+      </div>
+
+      {latestEvents.length === 0 ? (
+        <div className="audit-empty">
+          Henüz event yok. Mandate oluşturup bir demo senaryosu çalıştırınca zincir burada görünür.
+        </div>
+      ) : (
+        <div className="es-chain">
+          {latestEvents.map((e, i) => {
+            const meta = EVENT_TR[e.event_type] || { tone: "info" };
+            const sum = auditEventSummary(e);
+
+            return (
+              <div className={"es-item " + meta.tone} key={`${e.event_type}-${e.timestamp}-${i}`}>
+                <div className="es-left">
+                  <span className="es-dot">{i + 1}</span>
+                  {i < latestEvents.length - 1 && <span className="es-line" />}
+                </div>
+
+                <div className="es-card">
+                  <div className="es-top">
+                    <div>
+                      <b>{eventStageLabel(e.event_type)}</b>
+                      <span>{meta.desc || "Audit event"}</span>
+                    </div>
+                    <time>{timeFromMs(e.timestamp)}</time>
+                  </div>
+
+                  <div className="es-io">
+                    <div>
+                      <span>Input</span>
+                      <b>{sum.input}</b>
+                    </div>
+                    <div>
+                      <span>Output</span>
+                      <b>{sum.output}</b>
+                    </div>
+                  </div>
+
+                  <div className="es-reason">
+                    <span>Sebep</span>
+                    <p>{sum.reason}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {tokenBlocked && (
+            <div className="es-item danger">
+              <div className="es-left">
+                <span className="es-dot">!</span>
+              </div>
+              <div className="es-card">
+                <div className="es-top">
+                  <div>
+                    <b>Token Blocked</b>
+                    <span>İşlem onaylanmadığı için ödeme yetkisi üretilmedi.</span>
+                  </div>
+                  <time>son karar</time>
+                </div>
+                <div className="es-io">
+                  <div>
+                    <span>Input</span>
+                    <b>{VERDICT_TR[lastTx.final_decision] || lastTx.final_decision}</b>
+                  </div>
+                  <div>
+                    <span>Output</span>
+                    <b>Token yok</b>
+                  </div>
+                </div>
+                <div className="es-reason">
+                  <span>Sebep</span>
+                  <p>{lastTx.explanation || "Policy veya risk sonucu token üretimi engellendi."}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function AuditView({ id, items, raw, onRefresh }) {
   const [open, setOpen] = useState({});
   const [filter, setFilter] = useState("all");
 
@@ -1531,6 +1792,8 @@ function AuditView({ id, items, onRefresh }) {
           </div>
           <span className="muted">{shown.length} işlem · {auditSummary.events} olay</span>
         </div>
+
+        <EventSourcingChain raw={raw || []} transactions={txItems} />
 
         <div className="audit-kpis">
           <div className="audit-kpi">
