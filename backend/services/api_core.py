@@ -35,6 +35,10 @@ RULE_TR = {
     "merchant_approval": "Satıcı onayı",
     "new_merchant_stepup": "Yeni satıcı kontrolü",
     "velocity_limit": "Hız limiti (velocity)",
+    "mcc_category_consistency": "MCC kategori tutarlılığı",
+    "mcc_category_mismatch": "MCC kategori uyumsuzluğu",
+    "mcc_blocked_category": "MCC yasaklı kategori",
+    "mcc_unknown": "Bilinmeyen MCC kodu",
 }
 
 
