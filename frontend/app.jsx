@@ -6,6 +6,26 @@ const API = (() => {
   return `http://${h}:8787`;
 })();
 
+async function apiFetch(path, options = {}) {
+  const response = await fetch(`${API}${path}`, options);
+  const payload = await response.json();
+
+  // New standard API envelope
+  if (payload && payload.ok === true) {
+    return payload.data;
+  }
+
+  if (payload && payload.ok === false) {
+    const err = new Error(payload.error?.message || "API request failed");
+    err.code = payload.error?.code || "API_ERROR";
+    err.details = payload.error?.details || {};
+    throw err;
+  }
+
+  // Backward compatibility for any legacy/raw response
+  return payload;
+}
+
 const CAT_TR = {
   office_furniture: "Ofis Mobilyası", office_supplies: "Ofis Malzemeleri",
   cleaning: "Temizlik", electronics: "Elektronik", gift_cards: "Hediye Kartı",
@@ -155,15 +175,16 @@ function App() {
   const [stepupResolved, setStepupResolved] = useState(null);// step-up onay sonucu
   const [riskProfile, setRiskProfile] = useState("balanced");// risk tolerans profili
   const [persist, setPersist] = useState(null);              // SQLite durum bilgisi
+  const mandateRef = useRef(null);
   const resultRef = useRef(null);
 
   useEffect(() => {
-    fetch(`${API}/api/bootstrap`).then(r => r.json()).then(setBoot).catch(() => setBoot("err"));
+    apiFetch("/api/bootstrap").then(setBoot).catch(() => setBoot("err"));
     refreshPersist();
   }, []);
 
   const refreshPersist = () => {
-    fetch(`${API}/api/persistence`).then(r => r.json()).then(setPersist).catch(() => { });
+    apiFetch("/api/persistence").then(setPersist).catch(() => { });
   };
 
   const pushDemoLog = (type, text, meta = "") => {
@@ -193,27 +214,54 @@ function App() {
     setSecurityScan(null);
 
     try {
-      const r = await fetch(`${API}/api/intent/parse`, {
+      const d = await apiFetch("/api/intent/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: textToParse, user_id: boot.default_user })
+        body: JSON.stringify({ text: textToParse, user_id: boot?.default_user || "u_acme" })
       });
 
-      const d = await r.json();
+      const parsed = d?.data || d;
 
-      setParseMode(d.parse_mode);
-      setSecurityScan(d.security_scan || null);
-      setLlmAvailable(d.parse_mode === "llm");
+      console.log("parse response data:", parsed);
+      setParseMode(parsed.parse_mode);
+      setSecurityScan(parsed.security_scan || null);
+      setLlmAvailable(parsed.parse_mode === "llm");
 
-      if (d.blocked || (!d.mandate && d.security_scan?.is_attack)) {
+      if (parsed.blocked || (!parsed.mandate && parsed.security_scan?.is_attack)) {
         setMandate(null);
         setStep(1);
-        return d;
+        return parsed;
       }
 
-      setMandate(d.mandate);
+      if (!parsed.mandate) {
+        console.error("Parse response did not include mandate:", parsed);
+        setSecurityScan({
+          is_attack: true,
+          threat_level: "error",
+          detections: [{
+            label: "PARSE_RESPONSE_INVALID",
+            reason: "Parse cevabında mandate alanı bulunamadı.",
+          }],
+        });
+        setStep(1);
+        return parsed;
+      }
+
+      setMandate(parsed.mandate);
       setStep(2);
-      return d;
+      setTimeout(() => mandateRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      }), 120);
+      return parsed;
+    } catch (err) {
+      console.error("Intent parse failed:", err);
+      setSecurityScan({
+        is_attack: true,
+        threat_level: "error",
+        detections: [{ label: err.code || "API_ERROR", reason: err.message }],
+      });
+      return null;
     } finally {
       setParsing(false);
     }
@@ -225,11 +273,10 @@ function App() {
 
     setApproving(true);
     try {
-      const r = await fetch(`${API}/api/mandate/approve`, {
+      const d = await apiFetch("/api/mandate/approve", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mandate_id: targetMandate.mandate_id })
       });
-      const d = await r.json();
 
       const activeMandate = d.mandate || { ...targetMandate, status: "active" };
       setMandate(activeMandate);
@@ -249,10 +296,17 @@ function App() {
     setStepupResolved(null);
     setPipeline({ policy: "run", risk: "idle", decision: "idle" });
 
-    const ar = await fetch(`${API}/api/agent/request`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario, user_id: boot.default_user })
-    }).then(r => r.json());
+    let ar;
+    try {
+      ar = await apiFetch("/api/agent/request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario, user_id: boot?.default_user || "u_acme" })
+      });
+    } catch (err) {
+      setRunning(false);
+      if (!silent) pushDemoLog("bad", "Senaryo üretilemedi", err.message);
+      return { error: err.message, code: err.code };
+    }
 
     if (ar.error) {
       setRunning(false);
@@ -265,10 +319,10 @@ function App() {
     setPipeline(p => ({ ...p, risk: "run" }));
     await wait(650);
 
-    const ev = await fetch(`${API}/api/transaction/evaluate`, {
+    const ev = await apiFetch("/api/transaction/evaluate", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transaction: ar.transaction })
-    }).then(r => r.json());
+    });
 
     const pol = ev.policy_result || {};
     const polState = (pol.failed_rules || []).length ? "bad"
@@ -370,10 +424,10 @@ function App() {
 
   const resolveStepup = async (approved) => {
     const txid = evalResult.transaction.transaction_id;
-    const out = await fetch(`${API}/api/stepup/resolve`, {
+    const out = await apiFetch("/api/stepup/resolve", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transaction_id: txid, approved })
-    }).then(r => r.json());
+    });
     setStepupResolved(out);
     if (analytics) {
       refreshAnalytics().catch(() => { });
@@ -385,7 +439,7 @@ function App() {
   };
 
   const loadAudit = async ({ scroll = true } = {}) => {
-    const d = await fetch(`${API}/api/audit`).then(r => r.json());
+    const d = await apiFetch("/api/audit");
     setAudit(d.transactions || []);
     setAuditOpen(true);
     setStep(6);
@@ -406,7 +460,7 @@ function App() {
   }, [auditOpen]);
 
   const refreshAnalytics = async ({ scroll = false } = {}) => {
-    const d = await fetch(`${API}/api/analytics`).then(r => r.json());
+    const d = await apiFetch("/api/analytics");
     setAnalytics(d);
     if (scroll) {
       setTimeout(() => document.getElementById("analytics")?.scrollIntoView({ behavior: "smooth" }), 100);
@@ -429,7 +483,7 @@ function App() {
 
   const setRiskProfileAndApply = async (profile) => {
     setRiskProfile(profile);
-    await fetch(`${API}/api/risk/threshold`, {
+    await apiFetch("/api/risk/threshold", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile })
     });
@@ -483,7 +537,7 @@ function App() {
         {/* STEP 2 — MANDATE APPROVAL */}
         {mandate && (
           <>
-            <div className="section-gap" />
+            <div className="section-gap" ref={mandateRef} />
             <Panel eyebrow="Adım 2 · Mandate Onayı"
               title="Bu talimat aşağıdaki kurallara dönüştürüldü"
               sub="LLM/parser çıktısı doğrudan yetki vermez. Onaylamadan aktif olmaz."
@@ -899,10 +953,10 @@ function TokenCard({ t }) {
   const runTamper = async () => {
     setBusy(true);
     try {
-      const r = await fetch(`${API}/api/token/tamper`, {
+      const r = await apiFetch("/api/token/tamper", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token_id: t.token_id, new_amount: 999999 })
-      }).then(x => x.json());
+      });
       setTamper(r);
     } finally { setBusy(false); }
   };
