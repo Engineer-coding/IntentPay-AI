@@ -14,13 +14,14 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from models.schema import now_ms
-from services import api_core, persistence
+from services import api_core, api_response, persistence
 from services.app_state import STATE
 
 
@@ -37,6 +38,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content=api_response.failure(
+            "VALIDATION_ERROR",
+            "İstek doğrulaması başarısız.",
+            {"errors": exc.errors()},
+        ),
+    )
 
 
 class APIRequest(BaseModel):
@@ -66,6 +82,17 @@ class ApproveMandateRequest(APIRequest):
     mandate_id: str = Field(
         description="Mandate identifier returned by /api/intent/parse.",
         examples=["man_1234567890"],
+    )
+
+
+class UpdateMandateRequest(APIRequest):
+    mandate_id: str = Field(
+        description="Mandate identifier returned by /api/intent/parse.",
+        examples=["man_1234567890"],
+    )
+    updates: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Editable mandate fields before approval.",
     )
 
 
@@ -145,100 +172,135 @@ def startup() -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {
+    return api_response.success({
         "status": "ok",
         "time": now_ms(),
         "server": "fastapi",
-    }
+    })
 
 
 @app.get("/api/bootstrap")
 def bootstrap() -> dict[str, Any]:
-    return api_core.bootstrap()
+    return api_response.envelope(api_core.bootstrap())
 
 
 @app.get("/api/audit")
 def audit() -> dict[str, Any]:
-    return api_core.audit()
+    return api_response.envelope(api_core.audit())
 
 
 @app.get("/api/tokens")
 def tokens() -> dict[str, Any]:
-    return api_core.tokens()
+    return api_response.envelope(api_core.tokens())
 
 
 @app.get("/api/analytics")
 def analytics() -> dict[str, Any]:
-    return api_core.analytics()
+    return api_response.envelope(api_core.analytics())
 
 
 @app.get("/api/persistence")
 def persistence_stats() -> dict[str, Any]:
-    return api_core.persistence_stats()
+    return api_response.envelope(api_core.persistence_stats())
 
 
 @app.post("/api/intent/parse")
 def parse_intent(body: ParseIntentRequest) -> dict[str, Any]:
     try:
-        return api_core.parse_intent(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.parse_intent(body.model_dump(exclude_none=True)),
+            default_error_code="INVALID_INTENT",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
 
 
 @app.post("/api/mandate/approve")
 def approve_mandate(body: ApproveMandateRequest) -> dict[str, Any]:
     try:
-        return api_core.approve_mandate(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.approve_mandate(body.model_dump(exclude_none=True)),
+            default_error_code="MANDATE_APPROVAL_FAILED",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
+
+
+@app.post("/api/mandate/update")
+def update_mandate(body: UpdateMandateRequest) -> dict[str, Any]:
+    try:
+        return api_response.envelope(
+            api_core.update_mandate(body.model_dump(exclude_none=True)),
+            default_error_code="MANDATE_UPDATE_FAILED",
+        )
+    except Exception as exc:
+        return api_response.exception_response(exc)
 
 
 @app.post("/api/agent/request")
 def agent_request(body: AgentRequest) -> dict[str, Any]:
     try:
-        return api_core.agent_request(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.agent_request(body.model_dump(exclude_none=True)),
+            default_error_code="UNKNOWN_SCENARIO",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
 
 
 @app.post("/api/transaction/evaluate")
 def transaction_evaluate(body: TransactionEvaluateRequest) -> dict[str, Any]:
     try:
-        return api_core.evaluate_transaction(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.evaluate_transaction(body.model_dump(exclude_none=True)),
+            default_error_code="TRANSACTION_EVALUATION_FAILED",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
 
 
 @app.post("/api/security/scan")
 def security_scan(body: SecurityScanRequest) -> dict[str, Any]:
     try:
-        return api_core.security_scan(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.security_scan(body.model_dump(exclude_none=True)),
+            default_error_code="SECURITY_SCAN_FAILED",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
 
 
 @app.post("/api/stepup/resolve")
 def stepup_resolve(body: StepupResolveRequest) -> dict[str, Any]:
     try:
-        return api_core.resolve_stepup(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.resolve_stepup(body.model_dump(exclude_none=True)),
+            default_error_code="STEPUP_RESOLUTION_FAILED",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
 
 
 @app.post("/api/token/tamper")
 def token_tamper(body: TokenTamperRequest) -> dict[str, Any]:
     try:
-        return api_core.tamper_token(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.tamper_token(body.model_dump(exclude_none=True)),
+            default_error_code="TOKEN_TAMPER_FAILED",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
 
 
 @app.post("/api/risk/threshold")
 def risk_threshold(body: RiskThresholdRequest) -> dict[str, Any]:
     try:
-        return api_core.set_risk_threshold(body.model_dump(exclude_none=True))
+        return api_response.envelope(
+            api_core.set_risk_threshold(body.model_dump(exclude_none=True)),
+            default_error_code="RISK_THRESHOLD_UPDATE_FAILED",
+        )
     except Exception as exc:
-        return {"error": str(exc)}
+        return api_response.exception_response(exc)
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -252,9 +314,9 @@ def frontend(path: str):
     try:
         full_path.relative_to(FRONTEND_DIR.resolve())
     except ValueError:
-        return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(api_response.failure("NOT_FOUND", "Kaynak bulunamadı."), status_code=404)
 
     if not full_path.is_file():
-        return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(api_response.failure("NOT_FOUND", "Kaynak bulunamadı."), status_code=404)
 
     return FileResponse(full_path)

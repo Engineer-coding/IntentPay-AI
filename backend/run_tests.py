@@ -230,6 +230,61 @@ def _():
     pr = evaluate_policy(tx, m, merchant, agent, set())
     assert pr.preliminary_decision == "approve", pr.preliminary_decision
 
+@test("Policy: MCC kategori uyumsuzluğu step-up uyarısı üretir")
+def _():
+    m = fresh_active_mandate()
+    m.allowed_categories = []
+    m.blocked_categories = []
+
+    from services.agent_simulator import build_request as br
+    from models.schema import TransactionRequest
+
+    ar = br("safe", DEFAULT_USER)
+    tx = TransactionRequest(**ar["transaction"])
+
+    # OfisPlus merchant MCC'si 5712 -> office_furniture.
+    # Transaction kategorisini bilinçli olarak office_supplies yaparak mismatch üretiyoruz.
+    tx.merchant_id = "m_ofisplus"
+    tx.category = "office_supplies"
+
+    merchant = STATE.merchants[tx.merchant_id]
+    agent = STATE.agents[tx.agent_id]
+
+    pr = evaluate_policy(tx, m, merchant, agent, set())
+
+    warning_rules = [w["rule"] for w in pr.warnings]
+    assert "mcc_category_mismatch" in warning_rules, warning_rules
+    assert pr.preliminary_decision == "step-up", pr.preliminary_decision
+
+
+@test("Policy: MCC yasaklı kategori decline üretir")
+def _():
+    m = fresh_active_mandate()
+    m.allowed_categories = []
+    m.blocked_categories = ["electronics"]
+
+    from services.agent_simulator import build_request as br
+    from models.schema import TransactionRequest
+
+    ar = br("safe", DEFAULT_USER)
+    tx = TransactionRequest(**ar["transaction"])
+
+    # Transaction kendisini office_furniture gibi gösteriyor.
+    # Fakat merchant TeknoHan MCC 5732 -> electronics.
+    # Mandate electronics'i yasakladığı için MCC üzerinden decline beklenir.
+    tx.merchant_id = "m_teknohan"
+    tx.category = "office_furniture"
+
+    merchant = STATE.merchants[tx.merchant_id]
+    agent = STATE.agents[tx.agent_id]
+
+    pr = evaluate_policy(tx, m, merchant, agent, set())
+
+    failed_rules = [f["rule"] for f in pr.failed_rules]
+    assert "mcc_blocked_category" in failed_rules, failed_rules
+    assert pr.preliminary_decision == "decline", pr.preliminary_decision
+
+
 @test("Saldırı içeren talimat fail-closed bloklanır ve mandate oluşturulmaz")
 def _():
     h = Handler.__new__(Handler)
