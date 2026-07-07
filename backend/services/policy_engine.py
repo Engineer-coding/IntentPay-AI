@@ -15,12 +15,14 @@ Kontroller:
   - mandate status check
   - agent authorization check
   - token reuse check
+  - MCC / merchant category consistency check
 """
 from __future__ import annotations
 
 from models.schema import (
     Mandate, Merchant, Agent, TransactionRequest, PolicyResult, now_ms, CATEGORIES,
 )
+from services.mcc import category_for_mcc, explain_mcc
 
 
 def evaluate_policy(
@@ -91,6 +93,49 @@ def evaluate_policy(
                                  f"(izinli: {allowed_tr})."})
     else:
         passed.append("allowed_category")
+
+    # --- 6b. MCC / merchant kategori tutarlılığı ---
+    mcc_info = explain_mcc(getattr(merchant, "mcc_code", None))
+    mcc_category = category_for_mcc(getattr(merchant, "mcc_code", None))
+
+    if mcc_category:
+        tx_cat_tr = CATEGORIES.get(tx.category, tx.category)
+        mcc_cat_tr = CATEGORIES.get(mcc_category, mcc_category)
+
+        if mcc_category in mandate.blocked_categories:
+            failed.append({
+                "rule": "mcc_blocked_category",
+                "reason": (
+                    f"Satıcının MCC kodu {mcc_info['mcc_code']} "
+                    f"({mcc_info['mcc_label']}) '{mcc_cat_tr}' kategorisine işaret ediyor; "
+                    "bu kategori mandate tarafından yasaklanmış."
+                ),
+                "mcc": mcc_info,
+            })
+
+        elif tx.category != mcc_category:
+            warnings.append({
+                "rule": "mcc_category_mismatch",
+                "reason": (
+                    f"İşlem kategorisi '{tx_cat_tr}' olarak bildirildi ancak satıcının "
+                    f"MCC kodu {mcc_info['mcc_code']} ({mcc_info['mcc_label']}) "
+                    f"'{mcc_cat_tr}' kategorisine işaret ediyor. Ek kontrol önerilir."
+                ),
+                "mcc": mcc_info,
+                "transaction_category": tx.category,
+            })
+
+        else:
+            passed.append("mcc_category_consistency")
+    else:
+        warnings.append({
+            "rule": "mcc_unknown",
+            "reason": (
+                f"Satıcının MCC kodu tanınmıyor veya eksik "
+                f"({mcc_info['mcc_code'] or 'yok'}). Ek kontrol önerilir."
+            ),
+            "mcc": mcc_info,
+        })
 
     # --- 7. işlem başına tutar limiti ---
     if tx.amount > mandate.max_amount:

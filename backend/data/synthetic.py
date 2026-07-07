@@ -78,15 +78,23 @@ def seed_agents() -> dict[str, Agent]:
 
 def seed_merchants() -> dict[str, Merchant]:
     data = [
-        ("m_ofisplus",   "OfisPlus Mağazası",   "office_furniture", 0.94, True),
-        ("m_kirtasiye",  "Kırtasiye Dünyası",   "office_supplies",  0.91, True),
-        ("m_temizko",    "TemizKO Tedarik",     "cleaning",         0.88, True),
-        ("m_teknohan",   "TeknoHan Elektronik", "electronics",      0.82, True),
-        ("m_yenisatici", "YeniSatıcı Online",   "gift_cards",       0.41, False),  # yeni & riskli
+        # id,             name,                  category,           trust, approved, mcc
+        ("m_ofisplus",   "OfisPlus Mağazası",   "office_furniture", 0.94, True,     "5712"),
+        ("m_kirtasiye",  "Kırtasiye Dünyası",   "office_supplies",  0.91, True,     "5943"),
+        ("m_temizko",    "TemizKO Tedarik",     "cleaning",         0.88, True,     "7349"),
+        ("m_teknohan",   "TeknoHan Elektronik", "electronics",      0.82, True,     "5732"),
+        ("m_yenisatici", "YeniSatıcı Online",   "gift_cards",       0.41, False,    "5816"),  # yeni & riskli
     ]
     return {
-        m[0]: Merchant(merchant_id=m[0], merchant_name=m[1], category=m[2],
-                       trust_score=m[3], is_approved=m[4], country="TR")
+        m[0]: Merchant(
+            merchant_id=m[0],
+            merchant_name=m[1],
+            category=m[2],
+            trust_score=m[3],
+            is_approved=m[4],
+            country="TR",
+            mcc_code=m[5],
+        )
         for m in data
     }
 

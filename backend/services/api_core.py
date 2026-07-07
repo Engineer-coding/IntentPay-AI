@@ -35,6 +35,10 @@ RULE_TR = {
     "merchant_approval": "Satıcı onayı",
     "new_merchant_stepup": "Yeni satıcı kontrolü",
     "velocity_limit": "Hız limiti (velocity)",
+    "mcc_category_consistency": "MCC kategori tutarlılığı",
+    "mcc_category_mismatch": "MCC kategori uyumsuzluğu",
+    "mcc_blocked_category": "MCC yasaklı kategori",
+    "mcc_unknown": "Bilinmeyen MCC kodu",
 }
 
 
@@ -120,7 +124,137 @@ def parse_intent(body: dict) -> dict:
         "mandate": result["mandate"],
     })
 
+    STATE.audit.record("mandate:" + mandate.mandate_id, "mandate_created", {
+        "created_at": now_ms(),
+        "mandate_id": mandate.mandate_id,
+        "user_id": mandate.user_id,
+        "summary": {
+            "max_amount": mandate.max_amount,
+            "total_limit": mandate.total_limit,
+            "allowed_categories": mandate.allowed_categories,
+            "blocked_categories": mandate.blocked_categories,
+            "approved_only": "__approved_only__" in mandate.allowed_merchants,
+            "requires_approval_for_new_merchant": mandate.requires_approval_for_new_merchant,
+            "risk_threshold": mandate.risk_threshold,
+            "status": mandate.status,
+        },
+        "reason": "Doğal dil talimatı yapılandırılmış mandate kurallarına çevrildi.",
+    })
+
     return result
+
+
+def update_mandate(body: dict) -> dict:
+    mandate_id = body.get("mandate_id")
+    updates = body.get("updates") or {}
+
+    mandate = STATE.mandates.get(mandate_id)
+
+    if not mandate:
+        return {"error": "Mandate bulunamadı."}
+
+    if mandate.status != "pending":
+        return {"error": "Sadece pending durumdaki mandate düzenlenebilir."}
+
+    allowed_fields = {
+        "max_amount",
+        "total_limit",
+        "allowed_categories",
+        "blocked_categories",
+        "allowed_merchants",
+        "requires_approval_for_new_merchant",
+        "valid_from",
+        "valid_until",
+        "risk_threshold",
+        "single_use_tokens",
+    }
+
+    unknown = sorted(set(updates.keys()) - allowed_fields)
+    if unknown:
+        return {"error": f"Geçersiz mandate alanı: {', '.join(unknown)}"}
+
+    categories = __import__("models.schema", fromlist=["CATEGORIES"]).CATEGORIES
+
+    if "max_amount" in updates:
+        value = float(updates["max_amount"])
+        if value <= 0:
+            return {"error": "Maksimum işlem tutarı 0'dan büyük olmalıdır."}
+        mandate.max_amount = value
+
+    if "total_limit" in updates:
+        value = float(updates["total_limit"])
+        if value <= 0:
+            return {"error": "Toplam limit 0'dan büyük olmalıdır."}
+        mandate.total_limit = value
+
+    if mandate.total_limit < mandate.max_amount:
+        return {"error": "Toplam limit, maksimum işlem tutarından küçük olamaz."}
+
+    if "allowed_categories" in updates:
+        vals = list(updates["allowed_categories"] or [])
+        bad = [x for x in vals if x not in categories]
+        if bad:
+            return {"error": f"Bilinmeyen izinli kategori: {', '.join(bad)}"}
+        mandate.allowed_categories = vals
+
+    if "blocked_categories" in updates:
+        vals = list(updates["blocked_categories"] or [])
+        bad = [x for x in vals if x not in categories]
+        if bad:
+            return {"error": f"Bilinmeyen yasaklı kategori: {', '.join(bad)}"}
+        mandate.blocked_categories = vals
+
+    overlap = sorted(set(mandate.allowed_categories) & set(mandate.blocked_categories))
+    if overlap:
+        return {"error": f"Kategori aynı anda izinli ve yasaklı olamaz: {', '.join(overlap)}"}
+
+    if "allowed_merchants" in updates:
+        vals = list(updates["allowed_merchants"] or [])
+        mandate.allowed_merchants = vals
+
+    if "requires_approval_for_new_merchant" in updates:
+        mandate.requires_approval_for_new_merchant = bool(
+            updates["requires_approval_for_new_merchant"]
+        )
+
+    if "valid_from" in updates:
+        mandate.valid_from = int(updates["valid_from"])
+
+    if "valid_until" in updates:
+        mandate.valid_until = int(updates["valid_until"])
+
+    if mandate.valid_until <= mandate.valid_from:
+        return {"error": "Geçerlilik bitiş tarihi başlangıçtan sonra olmalıdır."}
+
+    if "risk_threshold" in updates:
+        value = float(updates["risk_threshold"])
+        if value < 0 or value > 1:
+            return {"error": "Risk eşiği 0 ile 1 arasında olmalıdır."}
+        mandate.risk_threshold = value
+
+    if "single_use_tokens" in updates:
+        mandate.single_use_tokens = bool(updates["single_use_tokens"])
+
+    persistence.save_mandate(
+        mandate.mandate_id,
+        mandate.user_id,
+        mandate.to_dict(),
+        mandate.status,
+        now_ms(),
+    )
+
+    STATE.audit.record("mandate:" + mandate.mandate_id, "mandate_updated", {
+        "updated_at": now_ms(),
+        "mandate_id": mandate.mandate_id,
+        "updates": updates,
+        "mandate": mandate.to_dict(),
+    })
+
+    return {
+        "mandate": asdict(mandate),
+        "status": mandate.status,
+        "updated": True,
+    }
 
 
 def approve_mandate(body: dict) -> dict:

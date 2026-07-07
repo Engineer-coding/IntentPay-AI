@@ -6,6 +6,26 @@ const API = (() => {
   return `http://${h}:8787`;
 })();
 
+async function apiFetch(path, options = {}) {
+  const response = await fetch(`${API}${path}`, options);
+  const payload = await response.json();
+
+  // New standard API envelope
+  if (payload && payload.ok === true) {
+    return payload.data;
+  }
+
+  if (payload && payload.ok === false) {
+    const err = new Error(payload.error?.message || "API request failed");
+    err.code = payload.error?.code || "API_ERROR";
+    err.details = payload.error?.details || {};
+    throw err;
+  }
+
+  // Backward compatibility for any legacy/raw response
+  return payload;
+}
+
 const CAT_TR = {
   office_furniture: "Ofis Mobilyası", office_supplies: "Ofis Malzemeleri",
   cleaning: "Temizlik", electronics: "Elektronik", gift_cards: "Hediye Kartı",
@@ -29,6 +49,10 @@ const RULE_TR = {
   merchant_approval: "Satıcı onayı",
   new_merchant_stepup: "Yeni satıcı kontrolü",
   velocity_limit: "Hız limiti (velocity)",
+  mcc_category_consistency: "MCC kategori tutarlılığı",
+  mcc_category_mismatch: "MCC kategori uyumsuzluğu",
+  mcc_blocked_category: "MCC yasaklı kategori",
+  mcc_unknown: "Bilinmeyen MCC kodu",
 };
 
 const EXAMPLES = [
@@ -113,9 +137,19 @@ const EVENT_TR = {
     desc: "Doğal dil talimatı mandate kurallarına çevrilir.",
     tone: "info",
   },
+  mandate_created: {
+    label: "Mandate Created",
+    desc: "Parser çıktısı uygulanabilir yetki kurallarına dönüştürüldü.",
+    tone: "policy",
+  },
+  mandate_updated: {
+    label: "Mandate Updated",
+    desc: "Kullanıcı onaydan önce mandate kurallarını düzenledi.",
+    tone: "policy",
+  },
   mandate_approved: {
-    label: "Mandate Onayı",
-    desc: "Kullanıcı kuralları onaylayıp aktif hale getirir.",
+    label: "Mandate Approved",
+    desc: "Kullanıcı nihai kuralları onaylayıp aktif hale getirir.",
     tone: "token",
   },
   intent_blocked: {
@@ -140,6 +174,7 @@ function App() {
   const [intentText, setIntentText] = useState(EXAMPLES[0]);
   const [parsing, setParsing] = useState(false);
   const [mandate, setMandate] = useState(null);
+  const [mandateEditorOpen, setMandateEditorOpen] = useState(false);
   const [parseMode, setParseMode] = useState(null);
   const [approving, setApproving] = useState(false);
   const [evalResult, setEvalResult] = useState(null);
@@ -149,21 +184,23 @@ function App() {
   const [demoLog, setDemoLog] = useState([]);
   const [auditOpen, setAuditOpen] = useState(false);
   const [audit, setAudit] = useState([]);
+  const [auditRaw, setAuditRaw] = useState([]);
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [securityScan, setSecurityScan] = useState(null);   // mandate parse güvenlik taraması
   const [analytics, setAnalytics] = useState(null);          // dashboard verisi
   const [stepupResolved, setStepupResolved] = useState(null);// step-up onay sonucu
   const [riskProfile, setRiskProfile] = useState("balanced");// risk tolerans profili
   const [persist, setPersist] = useState(null);              // SQLite durum bilgisi
+  const mandateRef = useRef(null);
   const resultRef = useRef(null);
 
   useEffect(() => {
-    fetch(`${API}/api/bootstrap`).then(r => r.json()).then(setBoot).catch(() => setBoot("err"));
+    apiFetch("/api/bootstrap").then(setBoot).catch(() => setBoot("err"));
     refreshPersist();
   }, []);
 
   const refreshPersist = () => {
-    fetch(`${API}/api/persistence`).then(r => r.json()).then(setPersist).catch(() => { });
+    apiFetch("/api/persistence").then(setPersist).catch(() => { });
   };
 
   const pushDemoLog = (type, text, meta = "") => {
@@ -190,33 +227,75 @@ function App() {
 
     setParsing(true);
     setMandate(null);
+    setMandateEditorOpen(false);
     setSecurityScan(null);
 
     try {
-      const r = await fetch(`${API}/api/intent/parse`, {
+      const d = await apiFetch("/api/intent/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: textToParse, user_id: boot.default_user })
+        body: JSON.stringify({ text: textToParse, user_id: boot?.default_user || "u_acme" })
       });
 
-      const d = await r.json();
+      const parsed = d?.data || d;
 
-      setParseMode(d.parse_mode);
-      setSecurityScan(d.security_scan || null);
-      setLlmAvailable(d.parse_mode === "llm");
+      console.log("parse response data:", parsed);
+      setParseMode(parsed.parse_mode);
+      setSecurityScan(parsed.security_scan || null);
+      setLlmAvailable(parsed.parse_mode === "llm");
 
-      if (d.blocked || (!d.mandate && d.security_scan?.is_attack)) {
+      if (parsed.blocked || (!parsed.mandate && parsed.security_scan?.is_attack)) {
         setMandate(null);
         setStep(1);
-        return d;
+        return parsed;
       }
 
-      setMandate(d.mandate);
+      if (!parsed.mandate) {
+        console.error("Parse response did not include mandate:", parsed);
+        setSecurityScan({
+          is_attack: true,
+          threat_level: "error",
+          detections: [{
+            label: "PARSE_RESPONSE_INVALID",
+            reason: "Parse cevabında mandate alanı bulunamadı.",
+          }],
+        });
+        setStep(1);
+        return parsed;
+      }
+
+      setMandate(parsed.mandate);
       setStep(2);
-      return d;
+      setTimeout(() => mandateRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      }), 120);
+      return parsed;
+    } catch (err) {
+      console.error("Intent parse failed:", err);
+      setSecurityScan({
+        is_attack: true,
+        threat_level: "error",
+        detections: [{ label: err.code || "API_ERROR", reason: err.message }],
+      });
+      return null;
     } finally {
       setParsing(false);
     }
+  };
+
+  const updateMandate = async (updates) => {
+    if (!mandate?.mandate_id) return null;
+
+    const d = await apiFetch("/api/mandate/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mandate_id: mandate.mandate_id, updates })
+    });
+
+    const updated = d.mandate || mandate;
+    setMandate(updated);
+    return updated;
   };
 
   const approve = async (mandateOverride = null) => {
@@ -225,11 +304,10 @@ function App() {
 
     setApproving(true);
     try {
-      const r = await fetch(`${API}/api/mandate/approve`, {
+      const d = await apiFetch("/api/mandate/approve", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mandate_id: targetMandate.mandate_id })
       });
-      const d = await r.json();
 
       const activeMandate = d.mandate || { ...targetMandate, status: "active" };
       setMandate(activeMandate);
@@ -249,10 +327,17 @@ function App() {
     setStepupResolved(null);
     setPipeline({ policy: "run", risk: "idle", decision: "idle" });
 
-    const ar = await fetch(`${API}/api/agent/request`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenario, user_id: boot.default_user })
-    }).then(r => r.json());
+    let ar;
+    try {
+      ar = await apiFetch("/api/agent/request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario, user_id: boot?.default_user || "u_acme" })
+      });
+    } catch (err) {
+      setRunning(false);
+      if (!silent) pushDemoLog("bad", "Senaryo üretilemedi", err.message);
+      return { error: err.message, code: err.code };
+    }
 
     if (ar.error) {
       setRunning(false);
@@ -265,10 +350,10 @@ function App() {
     setPipeline(p => ({ ...p, risk: "run" }));
     await wait(650);
 
-    const ev = await fetch(`${API}/api/transaction/evaluate`, {
+    const ev = await apiFetch("/api/transaction/evaluate", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transaction: ar.transaction })
-    }).then(r => r.json());
+    });
 
     const pol = ev.policy_result || {};
     const polState = (pol.failed_rules || []).length ? "bad"
@@ -370,10 +455,10 @@ function App() {
 
   const resolveStepup = async (approved) => {
     const txid = evalResult.transaction.transaction_id;
-    const out = await fetch(`${API}/api/stepup/resolve`, {
+    const out = await apiFetch("/api/stepup/resolve", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ transaction_id: txid, approved })
-    }).then(r => r.json());
+    });
     setStepupResolved(out);
     if (analytics) {
       refreshAnalytics().catch(() => { });
@@ -385,8 +470,9 @@ function App() {
   };
 
   const loadAudit = async ({ scroll = true } = {}) => {
-    const d = await fetch(`${API}/api/audit`).then(r => r.json());
+    const d = await apiFetch("/api/audit");
     setAudit(d.transactions || []);
+    setAuditRaw(d.raw || []);
     setAuditOpen(true);
     setStep(6);
 
@@ -406,7 +492,7 @@ function App() {
   }, [auditOpen]);
 
   const refreshAnalytics = async ({ scroll = false } = {}) => {
-    const d = await fetch(`${API}/api/analytics`).then(r => r.json());
+    const d = await apiFetch("/api/analytics");
     setAnalytics(d);
     if (scroll) {
       setTimeout(() => document.getElementById("analytics")?.scrollIntoView({ behavior: "smooth" }), 100);
@@ -429,7 +515,7 @@ function App() {
 
   const setRiskProfileAndApply = async (profile) => {
     setRiskProfile(profile);
-    await fetch(`${API}/api/risk/threshold`, {
+    await apiFetch("/api/risk/threshold", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile })
     });
@@ -483,12 +569,19 @@ function App() {
         {/* STEP 2 — MANDATE APPROVAL */}
         {mandate && (
           <>
-            <div className="section-gap" />
+            <div className="section-gap" ref={mandateRef} />
             <Panel eyebrow="Adım 2 · Mandate Onayı"
               title="Bu talimat aşağıdaki kurallara dönüştürüldü"
               sub="LLM/parser çıktısı doğrudan yetki vermez. Onaylamadan aktif olmaz."
               badge={parseMode}>
               <MandateView m={mandate} />
+              {mandate.status === "pending" && mandateEditorOpen && (
+                <MandateEditor
+                  mandate={mandate}
+                  categories={boot.categories || CAT_TR}
+                  onSave={updateMandate}
+                />
+              )}
               {mandate.status === "active"
                 ? <div className="notice fade-in"><span className="i">✓</span>
                   <span>Mandate <b>aktif</b>. Artık AI ajanı bu kurallar dahilinde ödeme isteği oluşturabilir.</span></div>
@@ -496,7 +589,9 @@ function App() {
                   <button className="btn btn-primary" onClick={() => approve()} disabled={approving}>
                     {approving ? <><span className="spin"></span> Onaylanıyor</> : <>Kuralları Onayla & Aktifleştir</>}
                   </button>
-                  <button className="btn btn-ghost" onClick={() => setStep(1)}>Talimatı Düzenle</button>
+                  <button className="btn btn-ghost" onClick={() => setMandateEditorOpen(v => !v)}>
+                    {mandateEditorOpen ? "Düzenlemeyi Kapat" : "Talimatı Düzenle"}
+                  </button>
                 </div>}
             </Panel>
           </>
@@ -544,7 +639,7 @@ function App() {
               title="Policy Engine → Risk Modeli → Karar"
               sub="Deterministik kural kontrolü ve makine öğrenmesi risk skoru birleştirilir.">
               <Pipeline state={pipeline} />
-              {evalResult && <ResultView ev={evalResult} />}
+              {evalResult && <ResultView ev={evalResult} mandate={mandate} />}
               {evalResult?.needs_stepup && (
                 <StepupDialog resolved={stepupResolved} onResolve={resolveStepup} />
               )}
@@ -568,7 +663,7 @@ function App() {
         {analytics && <AnalyticsView id="analytics" data={analytics} onRefresh={loadAnalytics} />}
 
         {/* STEP 6 — AUDIT */}
-        {auditOpen && <AuditView id="audit" items={audit} onRefresh={loadAudit} />}
+        {auditOpen && <AuditView id="audit" items={audit} raw={auditRaw} onRefresh={loadAudit} />}
 
         <div className="foot">
           IntentPay AI · Hackathon MVP · Tüm ödeme işlemleri simülasyondur — gerçek kart/banka entegrasyonu yoktur.
@@ -680,6 +775,167 @@ function MandateView({ m }) {
     </div>
   );
 }
+
+
+function MandateEditor({ mandate, categories, onSave }) {
+  const allCategories = Object.keys(categories || CAT_TR);
+  const now = Date.now();
+  const currentDays = Math.max(1, Math.round((mandate.valid_until - mandate.valid_from) / 86400000));
+
+  const [draft, setDraft] = useState({
+    max_amount: mandate.max_amount,
+    total_limit: mandate.total_limit,
+    allowed_categories: mandate.allowed_categories || [],
+    blocked_categories: mandate.blocked_categories || [],
+    approved_only: (mandate.allowed_merchants || []).includes("__approved_only__"),
+    requires_approval_for_new_merchant: mandate.requires_approval_for_new_merchant,
+    valid_days: currentDays,
+    risk_threshold: mandate.risk_threshold ?? 0.7,
+  });
+
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const toggleList = (field, value) => {
+    setDraft(prev => {
+      const set = new Set(prev[field] || []);
+      if (set.has(value)) set.delete(value);
+      else set.add(value);
+      return { ...prev, [field]: Array.from(set) };
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setSaved(false);
+    setErr(null);
+
+    try {
+      const validFrom = mandate.valid_from || now;
+      const updates = {
+        max_amount: Number(draft.max_amount),
+        total_limit: Number(draft.total_limit),
+        allowed_categories: draft.allowed_categories,
+        blocked_categories: draft.blocked_categories,
+        allowed_merchants: draft.approved_only ? ["__approved_only__"] : [],
+        requires_approval_for_new_merchant: !!draft.requires_approval_for_new_merchant,
+        valid_from: validFrom,
+        valid_until: validFrom + Number(draft.valid_days || 1) * 86400000,
+        risk_threshold: Number(draft.risk_threshold),
+      };
+
+      await onSave(updates);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2200);
+    } catch (e) {
+      setErr(e.message || "Mandate güncellenemedi.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mandate-editor fade-in">
+      <div className="me-head">
+        <div>
+          <div className="me-kicker">Kullanıcı Kontrolü</div>
+          <h3>Mandate Kurallarını Onay Öncesi Düzenle</h3>
+          <p>
+            Parser/LLM yalnızca öneri üretir. Nihai harcama yetkisi kullanıcı tarafından
+            gözden geçirilip düzenlenen bu kurallarla aktif olur.
+          </p>
+        </div>
+        <span className="me-pill">pending mandate</span>
+      </div>
+
+      <div className="me-grid">
+        <label className="me-field">
+          <span>Maksimum işlem tutarı</span>
+          <input type="number" min="1" step="1" value={draft.max_amount}
+            onChange={e => setDraft({ ...draft, max_amount: e.target.value })} />
+        </label>
+
+        <label className="me-field">
+          <span>Toplam harcama limiti</span>
+          <input type="number" min="1" step="1" value={draft.total_limit}
+            onChange={e => setDraft({ ...draft, total_limit: e.target.value })} />
+        </label>
+
+        <label className="me-field">
+          <span>Geçerlilik süresi (gün)</span>
+          <input type="number" min="1" max="365" step="1" value={draft.valid_days}
+            onChange={e => setDraft({ ...draft, valid_days: e.target.value })} />
+        </label>
+
+        <label className="me-field">
+          <span>Risk eşiği</span>
+          <input type="number" min="0" max="1" step="0.05" value={draft.risk_threshold}
+            onChange={e => setDraft({ ...draft, risk_threshold: e.target.value })} />
+        </label>
+      </div>
+
+      <div className="me-section">
+        <div className="me-title">İzinli kategoriler</div>
+        <div className="me-cats">
+          {allCategories.map(c => (
+            <button key={"a" + c}
+              className={"me-cat allow " + (draft.allowed_categories.includes(c) ? "active" : "")}
+              onClick={() => toggleList("allowed_categories", c)}>
+              {draft.allowed_categories.includes(c) ? "✓ " : ""}{CAT_TR[c] || categories[c] || c}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="me-section">
+        <div className="me-title">Yasaklı kategoriler</div>
+        <div className="me-cats">
+          {allCategories.map(c => (
+            <button key={"b" + c}
+              className={"me-cat block " + (draft.blocked_categories.includes(c) ? "active" : "")}
+              onClick={() => toggleList("blocked_categories", c)}>
+              {draft.blocked_categories.includes(c) ? "✕ " : ""}{CAT_TR[c] || categories[c] || c}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="me-toggles">
+        <label className="me-toggle">
+          <input type="checkbox" checked={draft.approved_only}
+            onChange={e => setDraft({ ...draft, approved_only: e.target.checked })} />
+          <span>
+            <b>Yalnızca onaylı satıcı</b>
+            <small>Satıcı whitelist/onay kontrolü uygulanır.</small>
+          </span>
+        </label>
+
+        <label className="me-toggle">
+          <input type="checkbox" checked={draft.requires_approval_for_new_merchant}
+            onChange={e => setDraft({ ...draft, requires_approval_for_new_merchant: e.target.checked })} />
+          <span>
+            <b>Yeni satıcıda ek onay</b>
+            <small>Yeni veya düşük güvenli satıcılar step-up akışına düşer.</small>
+          </span>
+        </label>
+      </div>
+
+      {err && <div className="me-error">✕ {err}</div>}
+      {saved && <div className="me-saved">✓ Mandate güncellendi. Onaylanacak kurallar artık bu değerlerdir.</div>}
+
+      <div className="btn-row">
+        <button className="btn btn-primary" onClick={save} disabled={saving}>
+          {saving ? <><span className="spin"></span> Kaydediliyor</> : <>Değişiklikleri Kaydet</>}
+        </button>
+        <span className="muted">
+          Kaydetmeden onaylarsanız parser tarafından üretilen ilk kurallar aktif olur.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 
 function AgentRoster({ agents }) {
   return (
@@ -807,7 +1063,273 @@ function Pipeline({ state }) {
   );
 }
 
-function ResultView({ ev }) {
+
+function normalizeRuleSet(pol) {
+  const passed = new Set(pol?.passed_rules || []);
+  const failed = new Set((pol?.failed_rules || []).map(x => x.rule || x));
+  const warned = new Set((pol?.warnings || []).map(x => x.rule || x));
+
+  const failedByRule = {};
+  (pol?.failed_rules || []).forEach(x => {
+    if (x.rule) failedByRule[x.rule] = x;
+  });
+
+  const warningByRule = {};
+  (pol?.warnings || []).forEach(x => {
+    if (x.rule) warningByRule[x.rule] = x;
+  });
+
+  return { passed, failed, warned, failedByRule, warningByRule };
+}
+
+function policyStatus(rule, rules, fallback = "pass") {
+  if (rules.failed.has(rule)) return "fail";
+  if (rules.warned.has(rule)) return "warn";
+  if (rules.passed.has(rule)) return "pass";
+  return fallback;
+}
+
+function statusLabel(status) {
+  return status === "fail" ? "FAIL"
+    : status === "warn" ? "WARNING"
+      : "PASS";
+}
+
+function statusIcon(status) {
+  return status === "fail" ? "✕"
+    : status === "warn" ? "!"
+      : "✓";
+}
+
+function extractMccInfo(pol) {
+  const failed = pol?.failed_rules || [];
+  const warnings = pol?.warnings || [];
+  const all = [...failed, ...warnings];
+
+  for (const item of all) {
+    if (item?.mcc) return item.mcc;
+  }
+
+  return null;
+}
+
+function buildPolicyDiffRows(ev, mandate) {
+  const tx = ev.transaction || {};
+  const pol = ev.policy_result || {};
+  const rules = normalizeRuleSet(pol);
+  const m = mandate || ev.mandate || {};
+  const mcc = extractMccInfo(pol);
+
+  const txAmount = Number(tx.amount || 0);
+  const maxAmount = Number(m.max_amount || 0);
+  const totalLimit = Number(m.total_limit || 0);
+  const spentSoFar = Number(m.spent_so_far || 0);
+  const projectedTotal = spentSoFar + txAmount;
+
+  const allowedCats = m.allowed_categories || [];
+  const blockedCats = m.blocked_categories || [];
+  const allowedMerchants = m.allowed_merchants || [];
+
+  const merchantName = tx.merchant_name || ev.merchant?.merchant_name || tx.merchant_id || "-";
+  const merchantApproved =
+    typeof ev.merchant?.is_approved === "boolean"
+      ? ev.merchant.is_approved
+      : allowedMerchants.includes("__approved_only__")
+        ? "onay kontrolü uygulandı"
+        : "serbest";
+
+  const rows = [];
+
+  rows.push({
+    key: "amount_limit",
+    rule: "İşlem başına limit",
+    mandate: maxAmount ? `≤ ${fmtTL(maxAmount)}` : "Limit yok",
+    transaction: fmtTL(txAmount),
+    status: policyStatus(
+      "amount_limit",
+      rules,
+      maxAmount && txAmount > maxAmount ? "fail" : "pass"
+    ),
+    detail: maxAmount && txAmount > maxAmount
+      ? "İşlem tutarı mandate limitini aşıyor."
+      : "İşlem tutarı mandate limiti içinde.",
+  });
+
+  rows.push({
+    key: "total_spending_limit",
+    rule: "Toplam harcama tavanı",
+    mandate: totalLimit ? `≤ ${fmtTL(totalLimit)}` : "Tavan yok",
+    transaction: `${fmtTL(spentSoFar)} + ${fmtTL(txAmount)} = ${fmtTL(projectedTotal)}`,
+    status: policyStatus(
+      "total_spending_limit",
+      rules,
+      totalLimit && projectedTotal > totalLimit ? "fail" : "pass"
+    ),
+    detail: totalLimit && projectedTotal > totalLimit
+      ? "Bu işlem toplam harcama tavanını aşar."
+      : "Toplam harcama tavanı korunuyor.",
+  });
+
+  rows.push({
+    key: "allowed_category",
+    rule: "İzin verilen kategori",
+    mandate: allowedCats.length
+      ? allowedCats.map(c => CAT_TR[c] || c).join(", ")
+      : "Kategori kısıtı yok",
+    transaction: CAT_TR[tx.category] || tx.category || "-",
+    status: policyStatus(
+      "allowed_category",
+      rules,
+      allowedCats.length && !allowedCats.includes(tx.category) ? "fail" : "pass"
+    ),
+    detail: allowedCats.length
+      ? "Transaction kategorisi izinli kategori listesiyle karşılaştırıldı."
+      : "Mandate izinli kategori kısıtı tanımlamıyor.",
+  });
+
+  rows.push({
+    key: "blocked_category",
+    rule: "Yasaklı kategori",
+    mandate: blockedCats.length
+      ? blockedCats.map(c => CAT_TR[c] || c).join(", ")
+      : "Yasaklı kategori yok",
+    transaction: CAT_TR[tx.category] || tx.category || "-",
+    status: policyStatus(
+      "blocked_category",
+      rules,
+      blockedCats.includes(tx.category) ? "fail" : "pass"
+    ),
+    detail: blockedCats.includes(tx.category)
+      ? "Transaction kategorisi mandate tarafından yasaklanmış."
+      : "Transaction kategorisi yasaklı listede değil.",
+  });
+
+  const mccRule =
+    rules.failed.has("mcc_blocked_category") ? "mcc_blocked_category"
+      : rules.warned.has("mcc_category_mismatch") ? "mcc_category_mismatch"
+        : rules.warned.has("mcc_unknown") ? "mcc_unknown"
+          : "mcc_category_consistency";
+
+  rows.push({
+    key: mccRule,
+    rule: "MCC kategori kontrolü",
+    mandate: blockedCats.length || allowedCats.length
+      ? [
+        allowedCats.length ? `izinli: ${allowedCats.map(c => CAT_TR[c] || c).join(", ")}` : null,
+        blockedCats.length ? `yasaklı: ${blockedCats.map(c => CAT_TR[c] || c).join(", ")}` : null,
+      ].filter(Boolean).join(" · ")
+      : "Kategori policy",
+    transaction: mcc
+      ? `${mcc.mcc_code || "-"} · ${mcc.mcc_label || "MCC"} · ${CAT_TR[mcc.category] || mcc.category || "-"}`
+      : "MCC sinyali yok",
+    status: policyStatus(mccRule, rules, "pass"),
+    detail:
+      rules.failedByRule[mccRule]?.reason ||
+      rules.warningByRule[mccRule]?.reason ||
+      "Merchant MCC kategorisi transaction ve mandate kurallarıyla tutarlı.",
+  });
+
+  rows.push({
+    key: "merchant_approval",
+    rule: "Satıcı onayı",
+    mandate: allowedMerchants.includes("__approved_only__")
+      ? "Sadece onaylı satıcı"
+      : allowedMerchants.length
+        ? allowedMerchants.join(", ")
+        : "Satıcı kısıtı yok",
+    transaction: `${merchantName} · ${merchantApproved === true ? "approved" : merchantApproved === false ? "not approved" : merchantApproved}`,
+    status: policyStatus("merchant_approval", rules, "pass"),
+    detail:
+      rules.failedByRule.merchant_approval?.reason ||
+      "Satıcı mandate içindeki onay politikasına göre değerlendirildi.",
+  });
+
+  rows.push({
+    key: "new_merchant_stepup",
+    rule: "Yeni satıcı politikası",
+    mandate: m.requires_approval_for_new_merchant
+      ? "Yeni satıcı için ek onay gerekli"
+      : "Yeni satıcı serbest",
+    transaction: merchantName,
+    status: policyStatus("new_merchant_stepup", rules, "pass"),
+    detail:
+      rules.warningByRule.new_merchant_stepup?.reason ||
+      "Yeni/onaysız satıcı kontrolü uygulandı.",
+  });
+
+  rows.push({
+    key: "velocity_limit",
+    rule: "Velocity kontrolü",
+    mandate: "Kısa sürede yoğun işlem engellenir",
+    transaction: `${ev.velocity_count || 0} önceki işlem / 60 sn`,
+    status: policyStatus(
+      "velocity_limit",
+      rules,
+      (ev.velocity_count || 0) >= 3 ? "warn" : "pass"
+    ),
+    detail: (ev.velocity_count || 0) >= 3
+      ? "Kısa sürede çok sayıda işlem risk sinyali olarak değerlendirildi."
+      : "İşlem hızı normal aralıkta.",
+  });
+
+  return rows;
+}
+
+function PolicyDiffTable({ ev, mandate }) {
+  const rows = buildPolicyDiffRows(ev, mandate);
+  const counts = rows.reduce((acc, r) => {
+    acc[r.status] = (acc[r.status] || 0) + 1;
+    return acc;
+  }, { pass: 0, warn: 0, fail: 0 });
+
+  return (
+    <div className="policy-diff fade-in">
+      <div className="pd-head">
+        <div>
+          <div className="pd-kicker">Canlı Policy Diff</div>
+          <h3>Mandate ↔ Transaction Karşılaştırması</h3>
+          <p>
+            Karar, kullanıcının onayladığı mandate kuralları ile AI ajanının işlem
+            isteği karşılaştırılarak üretilir.
+          </p>
+        </div>
+        <div className="pd-score">
+          <span className="ok">✓ {counts.pass || 0}</span>
+          <span className="warn">! {counts.warn || 0}</span>
+          <span className="bad">✕ {counts.fail || 0}</span>
+        </div>
+      </div>
+
+      <div className="pd-table">
+        <div className="pd-row pd-row-head">
+          <div>Kural</div>
+          <div>Mandate</div>
+          <div>Transaction</div>
+          <div>Durum</div>
+        </div>
+
+        {rows.map(row => (
+          <div className={"pd-row " + row.status} key={row.key}>
+            <div>
+              <b>{row.rule}</b>
+              <small>{row.detail}</small>
+            </div>
+            <div>{row.mandate}</div>
+            <div>{row.transaction}</div>
+            <div>
+              <span className={"pd-status " + row.status}>
+                {statusIcon(row.status)} {statusLabel(row.status)}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+function ResultView({ ev, mandate }) {
   const v = ev.final_decision;
   return (
     <div className="fade-in">
@@ -826,6 +1348,8 @@ function ResultView({ ev }) {
           )}
         </div>
       </div>
+
+      <PolicyDiffTable ev={ev} mandate={mandate} />
 
       <RiskCard risk={ev.risk_result} />
 
@@ -899,10 +1423,10 @@ function TokenCard({ t }) {
   const runTamper = async () => {
     setBusy(true);
     try {
-      const r = await fetch(`${API}/api/token/tamper`, {
+      const r = await apiFetch("/api/token/tamper", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token_id: t.token_id, new_amount: 999999 })
-      }).then(x => x.json());
+      });
       setTamper(r);
     } finally { setBusy(false); }
   };
@@ -972,7 +1496,256 @@ function PolicyBreakdown({ pol }) {
   );
 }
 
-function AuditView({ id, items, onRefresh }) {
+
+function timeFromMs(ts) {
+  if (!ts) return "—";
+  try {
+    return new Date(ts).toLocaleTimeString("tr-TR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
+}
+
+function auditEventSummary(e) {
+  const d = e.details || {};
+
+  if (e.event_type === "intent_parsed") {
+    return {
+      input: d.original_intent || "Doğal dil talimatı",
+      output: d.parse_mode ? `Parser modu: ${d.parse_mode}` : "Mandate önerisi üretildi",
+      reason: d.security_scan?.summary || "Talimat güvenlik taramasından geçti.",
+    };
+  }
+
+  if (e.event_type === "mandate_created") {
+    const s = d.summary || {};
+    return {
+      input: `User: ${d.user_id || "-"}`,
+      output: `Limit: ${fmtTL(s.max_amount || 0)} · Toplam: ${fmtTL(s.total_limit || 0)} · Durum: ${s.status || "-"}`,
+      reason: d.reason || "Mandate oluşturuldu.",
+    };
+  }
+
+  if (e.event_type === "mandate_updated") {
+    const keys = Object.keys(d.updates || {});
+    return {
+      input: keys.length ? keys.join(", ") : "Kural düzenlemesi",
+      output: `Güncellenen alan: ${keys.length}`,
+      reason: "Kullanıcı onaydan önce nihai yetki kurallarını değiştirdi.",
+    };
+  }
+
+  if (e.event_type === "mandate_approved") {
+    return {
+      input: d.mandate_id || "Pending mandate",
+      output: "Mandate active",
+      reason: "Kullanıcı nihai kuralları onayladı.",
+    };
+  }
+
+  if (e.event_type === "transaction_request") {
+    return {
+      input: `${d.agent_id || "agent"} → ${d.merchant || "merchant"}`,
+      output: `${fmtTL(d.amount || 0)} · ${CAT_TR[d.category] || d.category || "-"}`,
+      reason: d.note || d.cart || "AI ajan ödeme isteği oluşturdu.",
+    };
+  }
+
+  if (e.event_type === "policy_evaluation") {
+    const failed = d.failed || d.failed_rules || [];
+    const warnings = d.warnings || [];
+    return {
+      input: "Mandate rules ↔ transaction",
+      output: `${d.preliminary_decision || "-"} · ${failed.length} fail · ${warnings.length} warning`,
+      reason: failed[0]?.reason || warnings[0]?.reason || "Policy kuralları başarıyla geçti.",
+    };
+  }
+
+  if (e.event_type === "risk_scoring") {
+    return {
+      input: "Transaction features",
+      output: `Risk ${Number(d.risk_score || 0).toFixed(2)} · ${d.risk_level || "-"}`,
+      reason: (d.top_risk_factors || [])[0]?.factor || "Risk modeli skoru üretildi.",
+    };
+  }
+
+  if (e.event_type === "decision") {
+    return {
+      input: "Policy result + risk score",
+      output: VERDICT_TR[d.final_decision] || d.final_decision || "-",
+      reason: d.explanation || "Nihai karar üretildi.",
+    };
+  }
+
+  if (e.event_type === "token_issued") {
+    return {
+      input: d.transaction_id || "Approved transaction",
+      output: d.token_id || "Token issued",
+      reason: `Tek kullanımlık ödeme yetkisi üretildi. Limit: ${fmtTL(d.max_amount || 0)}`,
+    };
+  }
+
+  if (e.event_type === "intent_blocked") {
+    return {
+      input: d.original_intent || "Talimat",
+      output: "Mandate oluşturulmadı",
+      reason: d.reason || "Manipülasyon denemesi engellendi.",
+    };
+  }
+
+  return {
+    input: e.transaction_id || "-",
+    output: e.event_type,
+    reason: "Audit olayı kaydedildi.",
+  };
+}
+
+function eventStageLabel(eventType) {
+  const labels = {
+    intent_parsed: "Intent Parsed",
+    mandate_created: "Mandate Created",
+    mandate_updated: "Mandate Updated",
+    mandate_approved: "Mandate Approved",
+    transaction_request: "Agent Request Generated",
+    policy_evaluation: "Policy Evaluated",
+    risk_scoring: "Risk Scored",
+    decision: "Decision Produced",
+    token_issued: "Token Issued",
+    intent_blocked: "Intent Blocked",
+  };
+
+  return labels[eventType] || eventType;
+}
+
+function EventSourcingChain({ raw, transactions }) {
+  const wanted = [
+    "intent_parsed",
+    "mandate_created",
+    "mandate_updated",
+    "mandate_approved",
+    "transaction_request",
+    "policy_evaluation",
+    "risk_scoring",
+    "decision",
+    "token_issued",
+    "intent_blocked",
+  ];
+
+  const events = [...(raw || [])]
+    .filter(e => wanted.includes(e.event_type))
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  const latestEvents = events.slice(-18);
+
+  const lastTx = (transactions || [])[0];
+  const tokenBlocked =
+    lastTx &&
+    lastTx.final_decision &&
+    lastTx.final_decision !== "approve" &&
+    !(lastTx.events || []).some(e => e.event_type === "token_issued");
+
+  return (
+    <div className="event-source">
+      <div className="es-head">
+        <div>
+          <div className="es-kicker">Event Sourcing / Audit Chain</div>
+          <h3>Karar Zinciri</h3>
+          <p>
+            Her adım append-only audit event’i olarak kaydedilir. Zincir; input,
+            output ve karar sebebini geriye dönük denetlenebilir hale getirir.
+          </p>
+        </div>
+        <span className="es-count">{events.length} event</span>
+      </div>
+
+      {latestEvents.length === 0 ? (
+        <div className="audit-empty">
+          Henüz event yok. Mandate oluşturup bir demo senaryosu çalıştırınca zincir burada görünür.
+        </div>
+      ) : (
+        <div className="es-chain">
+          {latestEvents.map((e, i) => {
+            const meta = EVENT_TR[e.event_type] || { tone: "info" };
+            const sum = auditEventSummary(e);
+
+            return (
+              <div className={"es-item " + meta.tone} key={`${e.event_type}-${e.timestamp}-${i}`}>
+                <div className="es-left">
+                  <span className="es-dot">{i + 1}</span>
+                  {i < latestEvents.length - 1 && <span className="es-line" />}
+                </div>
+
+                <div className="es-card">
+                  <div className="es-top">
+                    <div>
+                      <b>{eventStageLabel(e.event_type)}</b>
+                      <span>{meta.desc || "Audit event"}</span>
+                    </div>
+                    <time>{timeFromMs(e.timestamp)}</time>
+                  </div>
+
+                  <div className="es-io">
+                    <div>
+                      <span>Input</span>
+                      <b>{sum.input}</b>
+                    </div>
+                    <div>
+                      <span>Output</span>
+                      <b>{sum.output}</b>
+                    </div>
+                  </div>
+
+                  <div className="es-reason">
+                    <span>Sebep</span>
+                    <p>{sum.reason}</p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {tokenBlocked && (
+            <div className="es-item danger">
+              <div className="es-left">
+                <span className="es-dot">!</span>
+              </div>
+              <div className="es-card">
+                <div className="es-top">
+                  <div>
+                    <b>Token Blocked</b>
+                    <span>İşlem onaylanmadığı için ödeme yetkisi üretilmedi.</span>
+                  </div>
+                  <time>son karar</time>
+                </div>
+                <div className="es-io">
+                  <div>
+                    <span>Input</span>
+                    <b>{VERDICT_TR[lastTx.final_decision] || lastTx.final_decision}</b>
+                  </div>
+                  <div>
+                    <span>Output</span>
+                    <b>Token yok</b>
+                  </div>
+                </div>
+                <div className="es-reason">
+                  <span>Sebep</span>
+                  <p>{lastTx.explanation || "Policy veya risk sonucu token üretimi engellendi."}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function AuditView({ id, items, raw, onRefresh }) {
   const [open, setOpen] = useState({});
   const [filter, setFilter] = useState("all");
 
@@ -1019,6 +1792,8 @@ function AuditView({ id, items, onRefresh }) {
           </div>
           <span className="muted">{shown.length} işlem · {auditSummary.events} olay</span>
         </div>
+
+        <EventSourcingChain raw={raw || []} transactions={txItems} />
 
         <div className="audit-kpis">
           <div className="audit-kpi">
