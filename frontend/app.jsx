@@ -2280,6 +2280,38 @@ function AnalyticsView({ id, data, onRefresh }) {
 
   const updatedAt = data.generated_at ? timeLabel(data.generated_at) : "canlı";
 
+  const chartTotal = Math.max(
+    total,
+    decisionRows.reduce((acc, row) => acc + (row.count || 0), 0),
+    1
+  );
+
+  let donutOffset = 25;
+  const donutSegments = decisionRows.map(row => {
+    const value = row.count || 0;
+    const pct = chartTotal ? (value / chartTotal) * 100 : 0;
+    const segment = {
+      ...row,
+      pct,
+      dash: `${pct} ${100 - pct}`,
+      offset: donutOffset,
+    };
+    donutOffset -= pct;
+    return segment;
+  });
+
+  const riskMax = Math.max(...riskRows.map(row => row.count || 0), 1);
+  const topRules = (data.top_rules || []).slice(0, 6);
+  const recentRows = (data.recent_transactions || []).slice(0, 8);
+
+  const dominantDecision = [...decisionRows].sort(
+    (a, b) => (b.count || 0) - (a.count || 0)
+  )[0];
+
+  const highestRiskBucket = [...riskRows].sort(
+    (a, b) => (b.count || 0) - (a.count || 0)
+  )[0];
+
   return (
     <div id={id}>
       <div className="section-gap" />
@@ -2324,6 +2356,99 @@ function AnalyticsView({ id, data, onRefresh }) {
           </div>
         </div>
 
+        {/* Grafik özeti */}
+        <div className="analytics-visual-grid">
+          <div className="an-card an-donut-card">
+            <div className="an-card-head">
+              <span>Karar Kompozisyonu</span>
+              <b>{chartTotal === 1 && total === 0 ? 0 : chartTotal}</b>
+            </div>
+
+            <div className="donut-wrap">
+              <svg className="donut" viewBox="0 0 42 42" aria-label="Karar dağılımı grafiği">
+                <circle className="donut-bg" cx="21" cy="21" r="15.915" />
+                {donutSegments.map(seg => (
+                  <circle
+                    key={seg.key}
+                    className="donut-seg"
+                    cx="21"
+                    cy="21"
+                    r="15.915"
+                    stroke={DEC_COLORS[seg.key] || "var(--line)"}
+                    strokeDasharray={seg.dash}
+                    strokeDashoffset={seg.offset}
+                  />
+                ))}
+              </svg>
+              <div className="donut-center">
+                <b>%{Number(summary.approval_rate ?? data.approve_rate ?? 0).toFixed(1)}</b>
+                <span>onay</span>
+              </div>
+            </div>
+
+            <div className="donut-legend">
+              {decisionRows.map(row => (
+                <div className="donut-leg" key={row.key}>
+                  <i style={{ background: DEC_COLORS[row.key] || "var(--line)" }} />
+                  <span>{row.label_tr || row.label || row.key}</span>
+                  <b>{row.count || 0}</b>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="an-card">
+            <div className="an-card-head">
+              <span>Risk Yoğunluğu</span>
+              <b>{riskRows.reduce((acc, row) => acc + (row.count || 0), 0)}</b>
+            </div>
+
+            <div className="risk-columns">
+              {riskRows.map(row => {
+                const h = ((row.count || 0) / riskMax) * 100;
+                return (
+                  <div className="risk-col" key={row.key}>
+                    <div className="risk-col-track">
+                      <i style={{
+                        height: Math.max(row.count ? 8 : 0, h) + "%",
+                        background: riskColor[row.key] || "var(--line)"
+                      }} />
+                    </div>
+                    <b style={{ color: riskColor[row.key] }}>{row.count || 0}</b>
+                    <span>{row.label_tr || row.label || row.key}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="an-card">
+            <div className="an-card-head">
+              <span>Canlı Özet</span>
+              <b>{updatedAt}</b>
+            </div>
+
+            <div className="analytics-insights">
+              <div>
+                <span>Baskın karar</span>
+                <b>{dominantDecision?.label_tr || dominantDecision?.label || "-"}</b>
+              </div>
+              <div>
+                <span>Baskın risk seviyesi</span>
+                <b>{highestRiskBucket?.label_tr || highestRiskBucket?.label || "-"}</b>
+              </div>
+              <div>
+                <span>Blok oranı</span>
+                <b>%{Number(summary.block_rate ?? data.block_rate ?? 0).toFixed(1)}</b>
+              </div>
+              <div>
+                <span>Son işlem sayısı</span>
+                <b>{recentRows.length}</b>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Karar dağılımı */}
         <div className="an-section">
           <div className="an-h">Karar Dağılımı</div>
@@ -2364,11 +2489,11 @@ function AnalyticsView({ id, data, onRefresh }) {
         {/* Son işlemler / timeline */}
         <div className="an-section">
           <div className="an-h">Son İşlemler</div>
-          {(data.recent_transactions || []).length === 0 ? (
+          {recentRows.length === 0 ? (
             <div className="muted">Henüz işlem yok. Birkaç demo senaryosu çalıştırınca burada timeline oluşur.</div>
           ) : (
             <div className="timeline">
-              {(data.recent_transactions || []).map(tx => (
+              {recentRows.map(tx => (
                 <div className={`tl-item ${tx.decision_key || "unknown"}`} key={tx.transaction_id}>
                   <div className="tl-dot" />
                   <div className="tl-main">
@@ -2400,9 +2525,9 @@ function AnalyticsView({ id, data, onRefresh }) {
         {/* En çok tetiklenen kurallar */}
         <div className="an-section">
           <div className="an-h">En Çok Tetiklenen Kurallar</div>
-          {(data.top_rules || []).length === 0
+          {topRules.length === 0
             ? <div className="muted">Henüz tetiklenen kural yok.</div>
-            : (data.top_rules || []).slice(0, 6).map((r, i) => (
+            : topRules.map((r, i) => (
               <div className="factor-bar" key={i}>
                 <div className="ft"><span>{r.label}</span><span className="c">{r.count}×</span></div>
                 <div className="bar"><i style={{ width: Math.max(8, (r.count / maxRule) * 100) + "%" }} /></div>
