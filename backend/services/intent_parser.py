@@ -42,7 +42,6 @@ _DURATION_DAYS = {
 # --------------------------------------------------------------------------- #
 def parse_intent(text: str, user_id: str) -> dict:
     """Doğal dil -> mandate (dict). Hangi modun kullanıldığını da döner."""
-    print("[intent_parser] OPENAI_API_KEY exists:", bool(os.environ.get("OPENAI_API_KEY")))
     if os.environ.get("OPENAI_API_KEY"):
         try:
             mandate, mode = _parse_with_llm(text, user_id), "llm"
