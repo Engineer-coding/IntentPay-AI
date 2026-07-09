@@ -11,6 +11,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Testler deterministik kalmalı; canlı LLM çıktısına bağlı olmamalı.
+os.environ.pop("OPENAI_API_KEY", None)
+os.environ.pop("ANTHROPIC_API_KEY", None)
 os.environ["RESET_DB"] = "1"
 
 from services import persistence

@@ -7,8 +7,9 @@ GÜVENLİK PRENSİBİ: Bu katman ASLA nihai ödeme kararı vermez. Sadece doğal
 kurallara çevirir. Çıktı kullanıcıya gösterilir ve onaylanmadan aktif olmaz.
 
 Çalışma modu:
-  - ANTHROPIC_API_KEY ortam değişkeni varsa  -> gerçek LLM ile parse (mode="llm")
-  - yoksa                                      -> deterministik kural tabanlı parse
+  - OPENAI_API_KEY ortam değişkeni varsa -> gerçek LLM ile parse (mode="llm")
+  - yoksa                                -> deterministik kural tabanlı parse
+  - LLM hata verirse                     -> deterministik kural fallback (mode="rule_fallback")
 """
 from __future__ import annotations
 
@@ -41,10 +42,15 @@ _DURATION_DAYS = {
 # --------------------------------------------------------------------------- #
 def parse_intent(text: str, user_id: str) -> dict:
     """Doğal dil -> mandate (dict). Hangi modun kullanıldığını da döner."""
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    print("[intent_parser] OPENAI_API_KEY exists:", bool(os.environ.get("OPENAI_API_KEY")))
+    if os.environ.get("OPENAI_API_KEY"):
         try:
             mandate, mode = _parse_with_llm(text, user_id), "llm"
-        except Exception:
+        except Exception as e:
+            print(
+                "[intent_parser] LLM başarısız, kurala düşülüyor: "
+                f"{type(e).__name__}: {e}"
+            )
             mandate, mode = _parse_with_rules(text, user_id), "rule_fallback"
     else:
         mandate, mode = _parse_with_rules(text, user_id), "rule"
@@ -148,15 +154,32 @@ def _extract_duration(low: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
-#  LLM parser (opsiyonel - ANTHROPIC_API_KEY varsa)
+#  LLM parser (opsiyonel - OPENAI_API_KEY varsa)
 # --------------------------------------------------------------------------- #
-_LLM_SYSTEM = """Sen bir ödeme talimatı ayrıştırıcısısın. Kullanıcının Türkçe doğal dil
-talimatını SADECE geçerli JSON olarak döndür. Açıklama, markdown veya ek metin YOK.
-Şema:
+_LLM_SYSTEM = """Sen IntentPay AI için ödeme talimatı ayrıştırıcısısın.
+
+Görev:
+Kullanıcının Türkçe doğal dil ödeme talimatını yapılandırılmış mandate JSON'una çevir.
+
+Kesin kurallar:
+- SADECE geçerli JSON döndür.
+- Markdown, açıklama, yorum veya ek metin döndürme.
+- Nihai ödeme kararı verme. Sadece kullanıcı niyetini kurallara çevir.
+- Tutarlar TRY kabul edilir.
+- Belirsizse güvenli ve kısıtlayıcı yorum yap.
+
+Kategori anahtarları:
+- office_furniture: sandalye, masa, koltuk, dolap, ofis mobilyası
+- office_supplies: kırtasiye, kağıt, kalem, toner, ofis malzemesi
+- cleaning: temizlik, deterjan, hijyen
+- electronics: elektronik, laptop, bilgisayar, telefon, tablet, yazıcı
+- gift_cards: hediye kartı, gift card, hediye çeki
+
+Zorunlu JSON şeması:
 {
-  "max_amount": number,            // işlem başına maksimum (TRY)
-  "total_limit": number,           // toplam harcama tavanı
-  "allowed_categories": string[],  // şunlardan: office_furniture, office_supplies, cleaning, electronics, gift_cards
+  "max_amount": number,
+  "total_limit": number,
+  "allowed_categories": string[],
   "blocked_categories": string[],
   "requires_approval_for_new_merchant": boolean,
   "only_approved_merchants": boolean,
@@ -165,46 +188,87 @@ talimatını SADECE geçerli JSON olarak döndür. Açıklama, markdown veya ek 
 
 
 def _parse_with_llm(text: str, user_id: str) -> Mandate:
+    import urllib.error
     import urllib.request
 
+    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
     payload = json.dumps({
-        "model": "claude-sonnet-4-6",
+        "model": model,
         "max_tokens": 500,
-        "system": _LLM_SYSTEM,
-        "messages": [{"role": "user", "content": text}],
-    }).encode()
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": _LLM_SYSTEM},
+            {"role": "user", "content": text},
+        ],
+    }).encode("utf-8")
 
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
+        "https://api.openai.com/v1/chat/completions",
         data=payload,
         headers={
             "content-type": "application/json",
-            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
-            "anthropic-version": "2023-06-01",
+            "authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
         },
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        body = json.loads(resp.read())
-    raw = "".join(b.get("text", "") for b in body.get("content", []))
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:500]
+        raise RuntimeError(f"OpenAI API {e.code}: {detail}") from e
+
+    raw = body["choices"][0]["message"]["content"]
     raw = re.sub(r"```json|```", "", raw).strip()
     parsed = json.loads(raw)
 
+    valid_categories = set(CATEGORIES.keys())
+
+    allowed = [
+        c for c in parsed.get("allowed_categories", [])
+        if isinstance(c, str) and c in valid_categories
+    ]
+    blocked = [
+        c for c in parsed.get("blocked_categories", [])
+        if isinstance(c, str) and c in valid_categories
+    ]
+
+    # Çelişkide blocked önceliklidir.
+    allowed = [c for c in allowed if c not in blocked]
+
+    if not allowed and not blocked:
+        allowed = ["office_supplies", "office_furniture"]
+
+    max_amount = float(parsed.get("max_amount", 5000) or 5000)
+    total_limit = float(parsed.get("total_limit", max_amount * 3) or max_amount * 3)
+
+    if max_amount <= 0:
+        max_amount = 5000.0
+    if total_limit < max_amount:
+        total_limit = max_amount * 3
+
+    valid_days = int(parsed.get("valid_days", 7) or 7)
+    valid_days = max(1, min(valid_days, 365))
+
     now = now_ms()
-    only_approved = parsed.get("only_approved_merchants", False)
+    only_approved = bool(parsed.get("only_approved_merchants", False))
+
     return Mandate(
         mandate_id=_id("man"),
         user_id=user_id,
         original_intent_text=text,
-        max_amount=float(parsed.get("max_amount", 5000)),
-        total_limit=float(parsed.get("total_limit", parsed.get("max_amount", 5000))),
+        max_amount=max_amount,
+        total_limit=total_limit,
         currency="TRY",
-        allowed_categories=parsed.get("allowed_categories", []),
-        blocked_categories=parsed.get("blocked_categories", []),
+        allowed_categories=allowed,
+        blocked_categories=blocked,
         allowed_merchants=["__approved_only__"] if only_approved else [],
         requires_approval_for_new_merchant=bool(
-            parsed.get("requires_approval_for_new_merchant", False) or only_approved),
+            parsed.get("requires_approval_for_new_merchant", False) or only_approved
+        ),
         valid_from=now,
-        valid_until=now + int(parsed.get("valid_days", 7)) * 86_400_000,
+        valid_until=now + valid_days * 86_400_000,
         risk_threshold=0.7,
         single_use_tokens=True,
         status="pending",
