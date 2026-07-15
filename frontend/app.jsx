@@ -187,12 +187,21 @@ function App() {
   const [auditRaw, setAuditRaw] = useState([]);
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [securityScan, setSecurityScan] = useState(null);   // mandate parse güvenlik taraması
+  const [threatModalOpen, setThreatModalOpen] = useState(false);
   const [analytics, setAnalytics] = useState(null);          // dashboard verisi
   const [stepupResolved, setStepupResolved] = useState(null);// step-up onay sonucu
   const [riskProfile, setRiskProfile] = useState("balanced");// risk tolerans profili
   const [persist, setPersist] = useState(null);              // SQLite durum bilgisi
   const mandateRef = useRef(null);
   const resultRef = useRef(null);
+  const [activeNav, setActiveNav] = useState("Genel Bakış");
+
+  const scrollToSection = (id, navLabel) => {
+    setActiveNav(navLabel);
+    requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
 
   useEffect(() => {
     apiFetch("/api/bootstrap").then(setBoot).catch(() => setBoot("err"));
@@ -225,10 +234,10 @@ function App() {
       (typeof textOverride === "string" ? textOverride : intentText).trim();
     if (!textToParse) return null;
 
-    setParsing(true);
     setMandate(null);
     setMandateEditorOpen(false);
     setSecurityScan(null);
+    setThreatModalOpen(false);
 
     try {
       const d = await apiFetch("/api/intent/parse", {
@@ -244,9 +253,25 @@ function App() {
       setSecurityScan(parsed.security_scan || null);
       setLlmAvailable(parsed.parse_mode === "llm");
 
-      if (parsed.blocked || (!parsed.mandate && parsed.security_scan?.is_attack)) {
+      if (parsed.blocked || parsed.security_scan?.is_attack) {
+        const threat = parsed.security_scan || {
+          is_attack: true,
+          threat_level: "medium",
+          summary: "Manipülasyon denemesi engellendi.",
+          detections: [
+            {
+              label: "INVALID_INTENT",
+              matched: textToParse,
+              reason: "Talimat güvenlik politikaları tarafından engellendi.",
+            },
+          ],
+        };
+
+        setSecurityScan(threat);
+        setThreatModalOpen(true);
         setMandate(null);
         setStep(1);
+
         return parsed;
       }
 
@@ -273,11 +298,24 @@ function App() {
       return parsed;
     } catch (err) {
       console.error("Intent parse failed:", err);
-      setSecurityScan({
+      const threat = {
         is_attack: true,
         threat_level: "error",
-        detections: [{ label: err.code || "API_ERROR", reason: err.message }],
-      });
+        summary: err.message || "Talimat güvenlik nedeniyle işlenemedi.",
+        detections: [
+          {
+            label: err.code || "API_ERROR",
+            matched: textToParse,
+            reason: err.message || "Talimat engellendi.",
+          },
+        ],
+      };
+
+      setSecurityScan(threat);
+      setThreatModalOpen(true);
+      setMandate(null);
+      setStep(1);
+
       return null;
     } finally {
       setParsing(false);
@@ -525,149 +563,160 @@ function App() {
   if (boot === "err") return <BackendDown />;
 
   return (
-    <div>
-      <TopBar llm={llmAvailable} persist={persist} />
-      <div className="shell">
-        <Stepper step={step} />
+    <div className="app-layout">
+      <Sidebar
+        active={activeNav}
+        onNavigate={(key) => {
+          if (key === "overview") scrollToSection("overview", "Genel Bakış");
+          if (key === "flow") scrollToSection("intent-flow", "Intent Akışı");
+          if (key === "new-intent") scrollToSection("new-intent", "Yeni Talimat");
+          if (key === "transactions") scrollToSection("decision", "İşlemler");
+          if (key === "audit") {
+            setActiveNav("Denetim Logu");
+            loadAudit();
+          }
+          if (key === "analytics") {
+            setActiveNav("Analitik");
+            loadAnalytics();
+          }
+        }}
+      />
+      <div className="workspace">
+        <TopBar llm={llmAvailable} persist={persist} />
+        <main className="shell" id="overview">
+          <div id="intent-flow"><Stepper step={step} /></div>
 
-        {/* STEP 1 — INTENT */}
-        <Panel eyebrow="Adım 1 · Niyet" title="Ödeme talimatınızı doğal dille yazın"
-          sub="Talimat yapılandırılmış, denetlenebilir kurallara (mandate) dönüştürülür.">
-          <label className="fld">Kullanıcı Talimatı</label>
-          <textarea rows={4} value={intentText} onChange={e => setIntentText(e.target.value)}
-            placeholder="Örn: Bu hafta 5.000 TL'ye kadar ofis sandalyesi al..." />
-          <div className="ex-row">
-            {EXAMPLES.map((ex, i) => (
-              <button key={i} className="chip" onClick={() => setIntentText(ex)}>
-                Örnek {i + 1}
-              </button>
-            ))}
-            <button className="chip chip-attack"
-              onClick={() => setIntentText(ATTACK_EXAMPLE)}>
-              ⚠ Saldırı Dene
-            </button>
-          </div>
-          <div className="btn-row">
-            <button className="btn btn-primary" onClick={() => parse()} disabled={parsing}>
-              {parsing ? <><span className="spin"></span> Ayrıştırılıyor</>
-                : <>Kurallara Dönüştür →</>}
-            </button>
-            <span className="muted">
-              {llmAvailable ? "LLM ayrıştırma aktif" : "Kural tabanlı ayrıştırma (LLM yoksa otomatik)"}
-            </span>
-          </div>
-        </Panel>
-
-        {/* SECURITY SCAN RESULT */}
-        {securityScan && (
-          <>
-            <div className="section-gap" />
-            <SecurityBanner scan={securityScan} />
-          </>
-        )}
-
-        {/* STEP 2 — MANDATE APPROVAL */}
-        {mandate && (
-          <>
-            <div className="section-gap" ref={mandateRef} />
-            <Panel eyebrow="Adım 2 · Mandate Onayı"
-              title="Bu talimat aşağıdaki kurallara dönüştürüldü"
-              sub="LLM/parser çıktısı doğrudan yetki vermez. Onaylamadan aktif olmaz."
-              badge={parseMode}>
-              <MandateView m={mandate} />
-              {mandate.status === "pending" && mandateEditorOpen && (
-                <MandateEditor
-                  mandate={mandate}
-                  categories={boot.categories || CAT_TR}
-                  onSave={updateMandate}
-                />
-              )}
-              {mandate.status === "active"
-                ? <div className="notice fade-in"><span className="i">✓</span>
-                  <span>Mandate <b>aktif</b>. Artık AI ajanı bu kurallar dahilinde ödeme isteği oluşturabilir.</span></div>
-                : <div className="btn-row">
-                  <button className="btn btn-primary" onClick={() => approve()} disabled={approving}>
-                    {approving ? <><span className="spin"></span> Onaylanıyor</> : <>Kuralları Onayla & Aktifleştir</>}
+          <div
+            className={
+              step >= 3 && mandate?.status === "active"
+                ? "dashboard-grid agent-stage"
+                : "dashboard-grid pre-agent-stage"
+            }
+          >          <section className="dash-cell intent-cell" id="new-intent">
+              <Panel eyebrow="Talimat" title="Talimatınızı Oluşturun"
+                sub="Doğal dilde ödeme talimatınızı yazın.">
+                <label className="fld">Kullanıcı Talimatı</label>
+                <textarea rows={5} value={intentText} onChange={e => setIntentText(e.target.value)}
+                  placeholder="Örn: Bu hafta 5.000 TL'ye kadar ofis sandalyesi al..." />
+                <div className="ex-row">
+                  {EXAMPLES.map((ex, i) => (
+                    <button key={i} className="chip" onClick={() => setIntentText(ex)}>Örnek {i + 1}</button>
+                  ))}
+                  <button className="chip chip-attack" onClick={() => setIntentText(ATTACK_EXAMPLE)}>Saldırı Dene</button>
+                </div>
+                <div className="btn-row compact-actions">
+                  <button className="btn btn-primary" onClick={() => parse()} disabled={parsing}>
+                    {parsing ? <><span className="spin"></span> Ayrıştırılıyor</> : <>Kurallara Dönüştür</>}
                   </button>
-                  <button className="btn btn-ghost" onClick={() => setMandateEditorOpen(v => !v)}>
-                    {mandateEditorOpen ? "Düzenlemeyi Kapat" : "Talimatı Düzenle"}
-                  </button>
-                </div>}
-            </Panel>
-          </>
-        )}
+                  <span className="muted">{llmAvailable ? "LLM ayrıştırma aktif" : "Rule-based parser aktif"}</span>
+                </div>
+              </Panel>
+            </section>
 
-        {/* STEP 3 — AGENT / SCENARIOS */}
-        {mandate?.status === "active" && (
-          <>
-            <div className="section-gap" />
-            <Panel eyebrow="Adım 3 · AI Ajan Simülatörü"
-              title="Bir satın alma senaryosu çalıştırın"
-              sub="Ajan ürün seçer ve ödeme isteği oluşturur. Her senaryo farklı bir risk durumu gösterir.">
-              <AgentRoster agents={boot.agents} />
-              <RiskProfileSelector value={riskProfile} onChange={setRiskProfileAndApply} />
-              <GuidedDemoPanel
-                flow={GUIDED_DEMO_FLOW}
-                running={demoRunning || running || parsing || approving}
-                log={demoLog}
-                onRunFull={runGuidedFullDemo}
-              />
-              <div className="scn-grid" style={{ marginTop: 16 }}>
-                {boot.scenarios.map(s => (
-                  <button key={s.key} className="scn" disabled={running}
-                    onClick={() => runScenario(s.key)}>
-                    <div className="corner" />
-                    <div className="lab">{s.label}</div>
-                    <div className="desc">{s.description}</div>
-                    <div className="meta">
-                      <span>{s.product}</span>
-                      <span className="amt">{fmtTL(s.amount)}</span>
+            <section className="dash-cell mandate-cell" ref={mandateRef}>
+              {mandate ? (
+                <Panel eyebrow="Yetkilendirme" title="Mandate Kuralları"
+                  sub="Parser çıktısı kullanıcı onayından önce düzenlenebilir." badge={parseMode}>
+                  <MandateView m={mandate} />
+                  {mandate.status === "pending" && mandateEditorOpen && (
+                    <MandateEditor
+                      mandate={mandate}
+                      categories={boot.categories || CAT_TR}
+                      onSave={updateMandate}
+                    />
+                  )}
+                  {mandate.status === "active" ? (
+                    <div className="notice fade-in"><span className="i">✓</span><span>Mandate aktif. Ajan bu sınırlar içinde talep oluşturabilir.</span></div>
+                  ) : (
+                    <div className="btn-row compact-actions">
+                      <button className="btn btn-primary" onClick={() => approve()} disabled={approving}>
+                        {approving ? <><span className="spin"></span> Onaylanıyor</> : <>Kuralları Onayla</>}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setMandateEditorOpen(true)}
+                      >
+                        Düzenle
+                      </button>
                     </div>
-                  </button>
-                ))}
-              </div>
-            </Panel>
-          </>
-        )}
-
-        {/* STEP 4/5 — EVALUATION */}
-        {(running || evalResult) && (
-          <>
-            <div className="section-gap" />
-            <div ref={resultRef} />
-            <Panel eyebrow="Adım 4 · Değerlendirme"
-              title="Policy Engine → Risk Modeli → Karar"
-              sub="Deterministik kural kontrolü ve makine öğrenmesi risk skoru birleştirilir.">
-              <Pipeline state={pipeline} />
-              {evalResult && <ResultView ev={evalResult} mandate={mandate} />}
-              {evalResult?.needs_stepup && (
-                <StepupDialog resolved={stepupResolved} onResolve={resolveStepup} />
+                  )}
+                </Panel>
+              ) : (
+                <Panel eyebrow="Yetkilendirme" title="Mandate Kuralları" sub="Talimat ayrıştırıldığında kurallar burada görünür.">
+                  <div className="empty-state"><span>2</span><p>Önce ödeme talimatını kurallara dönüştürün.</p></div>
+                </Panel>
               )}
-            </Panel>
-          </>
-        )}
+            </section>
 
-        {/* AUDIT + ANALYTICS TRIGGERS */}
-        {evalResult && (
-          <div className="btn-row" style={{ marginTop: 24, justifyContent: "center" }}>
-            <button className="btn btn-ghost" onClick={loadAudit}>
-              Denetim Kayıtları ↓
-            </button>
-            <button className="btn btn-primary" onClick={loadAnalytics}>
-              Analytics Dashboard ↓
-            </button>
+            <section className="dash-cell agent-cell">
+              {mandate?.status === "active" ? (
+                <Panel eyebrow="Ajan Simülasyonu" title="İşlem Senaryoları"
+                  sub="Bir satın alma senaryosu seçerek ödeme isteği oluşturun.">
+                  <AgentRoster agents={boot.agents} />
+                  <RiskProfileSelector value={riskProfile} onChange={setRiskProfileAndApply} />
+                  <div className="scn-grid compact-scenarios">
+                    {boot.scenarios.map(s => (
+                      <button key={s.key} className="scn" disabled={running} onClick={() => runScenario(s.key)}>
+                        <div className="lab">{s.label}</div><div className="desc">{s.description}</div>
+                        <div className="meta"><span>{s.product}</span><span className="amt">{fmtTL(s.amount)}</span></div>
+                      </button>
+                    ))}
+                  </div>
+                  <GuidedDemoPanel flow={GUIDED_DEMO_FLOW} running={demoRunning || running || parsing || approving}
+                    log={demoLog} onRunFull={runGuidedFullDemo} />
+                </Panel>
+              ) : (
+                <Panel eyebrow="Ajan Simülasyonu" title="İşlem Senaryoları" sub="Aktif mandate sonrasında işlem senaryoları açılır.">
+                  <div className="empty-state"><span>3</span><p>Mandate onayını bekliyor.</p></div>
+                </Panel>
+              )}
+            </section>
+
+            <section className="dash-cell decision-cell" id="decision" ref={resultRef}>
+              <Panel eyebrow="Değerlendirme & Karar" title="Policy, Risk ve Karar"
+                sub="İşlem kurallara, risk profiline ve ajan kimliğine göre değerlendirilir.">
+                {(running || evalResult) ? (
+                  <><Pipeline state={pipeline} />{evalResult && <ResultView ev={evalResult} mandate={mandate} />}
+                    {evalResult?.needs_stepup && <StepupDialog resolved={stepupResolved} onResolve={resolveStepup} />}</>
+                ) : (
+                  <div className="decision-placeholder"><div className="mini-gauge">0.00</div><div><b>Henüz karar yok</b><p>Bir ajan talebi çalıştırıldığında değerlendirme sonucu burada görünür.</p></div></div>
+                )}
+              </Panel>
+            </section>
           </div>
-        )}
 
-        {/* ANALYTICS DASHBOARD */}
-        {analytics && <AnalyticsView id="analytics" data={analytics} onRefresh={loadAnalytics} />}
+          {evalResult && (
+            <div className="overview-actions">
+              <button className="btn btn-ghost" onClick={loadAudit}>Denetim Kayıtlarını Aç</button>
+              <button className="btn btn-primary" onClick={loadAnalytics}>Analytics Dashboard</button>
+            </div>
+          )}
 
-        {/* STEP 6 — AUDIT */}
-        {auditOpen && <AuditView id="audit" items={audit} raw={auditRaw} onRefresh={loadAudit} />}
+          {analytics && <AnalyticsView id="analytics" data={analytics} onRefresh={loadAnalytics} />}
+          {auditOpen && <AuditView id="audit" items={audit} raw={auditRaw} onRefresh={loadAudit} />}
 
-        <div className="foot">
-          IntentPay AI · Hackathon MVP · Tüm ödeme işlemleri simülasyondur — gerçek kart/banka entegrasyonu yoktur.
-        </div>
+          <div className="trust-bar">
+            <div><b>Güvende ve Kontrol Sizde</b><span>Tüm kararlar denetlenebilir ve açıklanabilirdir.</span></div>
+            <div><b>Audit Trail</b><span>Aktif</span></div>
+            <div><b>Veri Şifreleme</b><span>AES-256</span></div>
+            <div><b>KVKK Uyumlu</b><span>Evet</span></div>
+            <div><b>Son Senkronizasyon</b><span>{new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</span></div>
+          </div>
+
+          <div className="foot">IntentPay AI · Hackathon MVP · Tüm ödeme işlemleri simülasyondur.</div>
+          <SecurityThreatModal
+            scan={securityScan}
+            open={threatModalOpen}
+            onClose={() => setThreatModalOpen(false)}
+          />
+          <MandateEditorModal
+            mandate={mandate}
+            categories={boot.categories || CAT_TR}
+            open={mandateEditorOpen}
+            onClose={() => setMandateEditorOpen(false)}
+            onSave={updateMandate}
+          />
+        </main>
       </div>
     </div>
   );
@@ -676,36 +725,72 @@ function App() {
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 /* ---------- sub-components ---------- */
+function Sidebar({ active, onNavigate }) {
+  const groups = [
+    ["İş Akışı", [
+      { label: "Intent Akışı", key: "flow", icon: "↔", enabled: true },
+      { label: "Yeni Talimat", key: "new-intent", icon: "＋", enabled: true },
+      { label: "Taslaklar", icon: "▣", enabled: false },
+    ]],
+    ["İşlemler", [
+      { label: "İşlemler", key: "transactions", icon: "◫", enabled: true },
+      { label: "Kartlar & Satıcılar", icon: "▤", enabled: false },
+    ]],
+    ["Görünürlük", [
+      { label: "Denetim Logu", key: "audit", icon: "▧", enabled: true },
+      { label: "Analitik", key: "analytics", icon: "◷", enabled: true },
+    ]],
+    ["Yönetim", [
+      { label: "Ayarlar", icon: "⚙", enabled: false },
+      { label: "Ekip & Roller", icon: "♙", enabled: false },
+    ]],
+  ];
+
+  return (
+    <aside className="sidebar">
+      <div className="sidebar-brand"><div className="logo" /><strong>IntentPay <span>AI</span></strong></div>
+      <button
+        className={`nav-item ${active === "Genel Bakış" ? "active" : ""}`}
+        onClick={() => onNavigate("overview")}
+      >⌂ <span>Genel Bakış</span></button>
+      {groups.map(([label, items]) => (
+        <div className="nav-group" key={label}>
+          <div className="nav-label">{label}</div>
+          {items.map(item => (
+            <button
+              className={`nav-item ${active === item.label ? "active" : ""}`}
+              key={item.label}
+              disabled={!item.enabled}
+              title={item.enabled ? "" : "Bu bölüm henüz bağlı değil"}
+              onClick={() => item.enabled && onNavigate(item.key)}
+            >
+              <span>{item.icon}</span><span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+      <div className="sidebar-guard"><span className="guard-dot"></span><div><b>IntentPay Guard</b><small>Koruma aktif</small></div></div>
+    </aside>
+  );
+}
+
 function TopBar({ llm, persist }) {
   return (
-    <div className="topbar">
+    <header className="topbar">
       <div className="topbar-inner">
-        <div className="brand">
-          <div className="logo" />
-          <div>
-            <h1>IntentPay AI</h1>
-            <div className="tag">payment authorization layer</div>
-          </div>
-        </div>
+        <div className="search-box"><span>⌕</span><input aria-label="Ara" placeholder="Ara (işlem, satıcı, talimat...)" /><kbd>⌘ K</kbd></div>
         <div className="spacer" />
-        {persist && (
-          <div className="mode-pill" title={persist.db_path}>
-            <span className="dot" />
-            SQLite · {persist.audit_events} olay
-          </div>
-        )}
-        <div className="mode-pill">
-          <span className={"dot " + (llm ? "" : "off")} />
-          {llm ? "LLM Parser" : "Rule Parser"}
-        </div>
-        <div className="sim-badge">● Simülasyon Modu</div>
+        {persist && <div className="mode-pill" title={persist.db_path}><span className="dot" />{persist.audit_events} kayıt</div>}
+        <div className="mode-pill"><span className={"dot " + (llm ? "" : "off")} />{llm ? "LLM Parser" : "Rule Parser"}</div>
+        <button className="notification">♧<span>3</span></button>
+        <div className="user-card"><div className="avatar">İY</div><div><b>İpek Yılmaz</b><small>Finans Yöneticisi</small></div><span>⌄</span></div>
       </div>
-    </div>
+    </header>
   );
 }
 
 function Stepper({ step }) {
-  const steps = ["Niyet", "Mandate", "Ajan", "Değerlendirme", "Karar", "Denetim"];
+  const steps = ["Niyet", "Kurallar", "Ajan", "Değerlendirme", "Karar", "Denetim"];
   return (
     <div className="stepper">
       {steps.map((s, i) => {
@@ -777,7 +862,12 @@ function MandateView({ m }) {
 }
 
 
-function MandateEditor({ mandate, categories, onSave }) {
+function MandateEditor({
+  mandate,
+  categories,
+  onSave,
+  onClose,
+}) {
   const allCategories = Object.keys(categories || CAT_TR);
   const now = Date.now();
   const currentDays = Math.max(1, Math.round((mandate.valid_until - mandate.valid_from) / 86400000));
@@ -827,7 +917,10 @@ function MandateEditor({ mandate, categories, onSave }) {
 
       await onSave(updates);
       setSaved(true);
-      setTimeout(() => setSaved(false), 2200);
+      setTimeout(() => {
+        setSaved(false);
+        onClose?.();
+      }, 700);
     } catch (e) {
       setErr(e.message || "Mandate güncellenemedi.");
     } finally {
@@ -924,18 +1017,119 @@ function MandateEditor({ mandate, categories, onSave }) {
       {err && <div className="me-error">✕ {err}</div>}
       {saved && <div className="me-saved">✓ Mandate güncellendi. Onaylanacak kurallar artık bu değerlerdir.</div>}
 
-      <div className="btn-row">
-        <button className="btn btn-primary" onClick={save} disabled={saving}>
-          {saving ? <><span className="spin"></span> Kaydediliyor</> : <>Değişiklikleri Kaydet</>}
+      <div className="btn-row mandate-editor-actions">
+        <button
+          className="btn btn-primary"
+          onClick={save}
+          disabled={saving}
+        >
+          {saving
+            ? <><span className="spin"></span> Kaydediliyor</>
+            : <>Değişiklikleri Kaydet</>}
         </button>
+
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={onClose}
+          disabled={saving}
+        >
+          İptal
+        </button>
+
         <span className="muted">
-          Kaydetmeden onaylarsanız parser tarafından üretilen ilk kurallar aktif olur.
+          Kaydetmeden kapatırsanız mevcut parser çıktısı korunur.
         </span>
       </div>
     </div>
   );
 }
 
+function MandateEditorModal({
+  mandate,
+  categories,
+  open,
+  onClose,
+  onSave,
+}) {
+  useEffect(() => {
+    if (!open) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = event => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, onClose]);
+
+  if (!open || !mandate || mandate.status !== "pending") {
+    return null;
+  }
+
+  return ReactDOM.createPortal(
+    <div
+      className="mandate-modal-layer"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mandate-modal-title"
+    >
+      <button
+        type="button"
+        className="mandate-modal-backdrop"
+        aria-label="Düzenleme penceresini kapat"
+        onClick={onClose}
+      />
+
+      <div className="mandate-modal">
+        <div className="mandate-modal-header">
+          <div>
+            <div className="mandate-modal-kicker">
+              Kullanıcı Kontrolü
+            </div>
+
+            <h2 id="mandate-modal-title">
+              Mandate Kurallarını Düzenle
+            </h2>
+
+            <p>
+              Parser çıktısını onaylamadan önce limitleri, kategorileri,
+              geçerlilik süresini ve risk eşiğini düzenleyin.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="mandate-modal-close"
+            aria-label="Kapat"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="mandate-modal-body">
+          <MandateEditor
+            mandate={mandate}
+            categories={categories}
+            onSave={onSave}
+            onClose={onClose}
+          />
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 function AgentRoster({ agents }) {
   return (
@@ -1885,37 +2079,64 @@ function AuditView({ id, items, raw, onRefresh }) {
   );
 }
 
+const AUDIT_ICONS = {
+  transaction_request: "↗",
+  policy_evaluation: "✓",
+  risk_scoring: "⌁",
+  decision: "◆",
+  token_issued: "⌁",
+  stepup_resolved: "!",
+  intent_parsed: "⌘",
+  mandate_created: "§",
+  mandate_updated: "§",
+  mandate_approved: "✓",
+};
+
 function AuditChain({ events }) {
   const sorted = [...events].sort((a, b) => {
     const ai = EVENT_ORDER.indexOf(a.event_type);
     const bi = EVENT_ORDER.indexOf(b.event_type);
+
     return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
   });
 
   return (
     <div className="audit-chain">
-      {sorted.map((e, i) => {
-        const meta = EVENT_TR[e.event_type] || {
-          label: e.event_type,
-          desc: "Ham audit olayı.",
+      {sorted.map((event, index) => {
+        const meta = EVENT_TR[event.event_type] || {
+          label: event.event_type,
+          desc: "Audit olayı.",
           tone: "info",
         };
 
         return (
-          <div className={"chain-step " + meta.tone} key={i}>
+          <div
+            className={`chain-step ${meta.tone}`}
+            key={`${event.event_type}-${index}`}
+          >
             <div className="chain-line">
-              <span className="chain-dot">{i + 1}</span>
+              <span
+                className="chain-dot"
+                title={`${index + 1}. aşama`}
+              >
+                {AUDIT_ICONS[event.event_type] || index + 1}
+              </span>
             </div>
-            <div className="chain-card">
-              <div className="chain-top">
+
+            <section className="chain-card">
+              <header className="chain-top">
                 <div>
                   <b>{meta.label}</b>
                   <span>{meta.desc}</span>
                 </div>
-                <em>{e.event_type}</em>
-              </div>
-              <AuditDetail e={e} />
-            </div>
+
+                <em>
+                  {event.event_type.replaceAll("_", " ")}
+                </em>
+              </header>
+
+              <AuditDetail e={event} />
+            </section>
           </div>
         );
       })}
@@ -2159,7 +2380,140 @@ function SecurityBanner({ scan }) {
     </div>
   );
 }
+function SecurityThreatModal({ scan, open, onClose }) {
+  useEffect(() => {
+    if (!open) return;
 
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const handleKeyDown = event => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const safeScan = scan || {
+    is_attack: true,
+    threat_level: "medium",
+    summary: "Manipülasyon denemesi engellendi.",
+    detections: [],
+  };
+
+  const detections = Array.isArray(safeScan.detections)
+    ? safeScan.detections
+    : [];
+
+  const threatLabel =
+    safeScan.threat_level === "high"
+      ? "YÜKSEK TEHDİT"
+      : safeScan.threat_level === "error"
+        ? "GÜVENLİK HATASI"
+        : "ORTA TEHDİT";
+
+  return ReactDOM.createPortal(
+    <div
+      className="threat-modal-layer"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="threat-modal-title"
+    >
+      <button
+        type="button"
+        className="threat-modal-backdrop"
+        aria-label="Popup'ı kapat"
+        onClick={onClose}
+      />
+
+      <div className="threat-modal">
+        <button
+          type="button"
+          className="threat-modal-close"
+          aria-label="Kapat"
+          onClick={onClose}
+        >
+          ×
+        </button>
+
+        <div className="threat-modal-icon">!</div>
+
+        <div className="threat-modal-content">
+          <div className="threat-modal-kicker">
+            TEHDİT ALGILANDI
+          </div>
+
+          <h2 id="threat-modal-title">
+            Manipülasyon denemesi engellendi
+          </h2>
+
+          <div className="threat-modal-level">
+            {threatLabel}
+          </div>
+
+          <p className="threat-modal-summary">
+            {safeScan.summary ||
+              "Talimat güvenlik politikalarını aşmaya yönelik ifadeler içeriyor."}
+          </p>
+
+          <div className="threat-modal-detections">
+            {(detections.length
+              ? detections
+              : [
+                {
+                  label: "INVALID_INTENT",
+                  matched: "Şüpheli talimat",
+                  reason: "Talimat güvenlik politikaları tarafından engellendi.",
+                },
+              ]
+            ).map((detection, index) => (
+              <div
+                className="threat-modal-detection"
+                key={`${detection.label || "detection"}-${index}`}
+              >
+                <b>
+                  {detection.label || "GÜVENLİK İHLALİ"}
+                </b>
+
+                <span>
+                  {detection.matched ||
+                    detection.reason ||
+                    "Şüpheli ifade engellendi."}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="threat-modal-defense">
+            Talimat başlangıç aşamasında reddedildi. Mandate
+            oluşturulmadı, kullanıcı onayına sunulmadı ve ajan ödeme
+            akışına geçemedi.
+          </div>
+
+          <div className="threat-modal-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onClose}
+            >
+              Anladım
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 /* ---------- Step-up Onay Diyaloğu ---------- */
 function StepupDialog({ resolved, onResolve }) {
   if (resolved) {
