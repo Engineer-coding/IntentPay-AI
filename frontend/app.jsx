@@ -176,6 +176,8 @@ function App() {
   const [mandate, setMandate] = useState(null);
   const [mandateEditorOpen, setMandateEditorOpen] = useState(false);
   const [parseMode, setParseMode] = useState(null);
+  const [policySources, setPolicySources] = useState([]);
+  const [companyId, setCompanyId] = useState("tekno_a");
   const [approving, setApproving] = useState(false);
   const [evalResult, setEvalResult] = useState(null);
   const [pipeline, setPipeline] = useState({ policy: "idle", risk: "idle", decision: "idle" });
@@ -243,15 +245,15 @@ function App() {
       const d = await apiFetch("/api/intent/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: textToParse, user_id: boot?.default_user || "u_acme" })
-      });
-
+        body: JSON.stringify({text: textToParse,user_id: boot?.default_user || "u_acme",company_id: companyId,})     
+       });
       const parsed = d?.data || d;
 
       console.log("parse response data:", parsed);
       setParseMode(parsed.parse_mode);
       setSecurityScan(parsed.security_scan || null);
-      setLlmAvailable(parsed.parse_mode === "llm");
+      setLlmAvailable(parsed.parse_mode === "llm" || parsed.parse_mode === "llm_rag");
+      setPolicySources(parsed.policy_sources || []);
 
       if (parsed.blocked || parsed.security_scan?.is_attack) {
         const threat = parsed.security_scan || {
@@ -270,6 +272,7 @@ function App() {
         setSecurityScan(threat);
         setThreatModalOpen(true);
         setMandate(null);
+        setPolicySources([]);
         setStep(1);
 
         return parsed;
@@ -618,6 +621,7 @@ function App() {
                 <Panel eyebrow="Yetkilendirme" title="Mandate Kuralları"
                   sub="Parser çıktısı kullanıcı onayından önce düzenlenebilir." badge={parseMode}>
                   <MandateView m={mandate} />
+                  <PolicySourcesView sources={policySources} />
                   {mandate.status === "pending" && mandateEditorOpen && (
                     <MandateEditor
                       mandate={mandate}
@@ -861,6 +865,76 @@ function MandateView({ m }) {
   );
 }
 
+function PolicySourcesView({ sources }) {
+  // RAG kullanılmadıysa (policy_sources boş) hiçbir şey gösterme.
+  if (!sources || sources.length === 0) return null;
+ 
+  const CATEGORY_TR = {
+    spending_policy: "Harcama Politikası",
+    approved_vendors: "Onaylı Satıcı",
+    category_rules: "Kategori Kuralı",
+    regulation: "Regülasyon",
+  };
+ 
+  return (
+    <div className="policy-sources fade-in" style={{
+      marginTop: 16,
+      padding: "14px 16px",
+      borderRadius: 12,
+      background: "rgba(26, 188, 156, 0.06)",
+      border: "1px solid rgba(26, 188, 156, 0.25)",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+          textTransform: "uppercase", color: "#1ABC9C",
+        }}>
+          ⬦ RAG · Politika-Farkında Mandate
+        </span>
+      </div>
+      <div style={{ fontSize: 13, color: "var(--muted, #8a94b0)", marginBottom: 12 }}>
+        Bu mandate oluşturulurken, şirketin aşağıdaki politika ve regülasyon
+        dokümanları hesaba katıldı:
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {sources.map((s, i) => (
+          <div key={s.doc_id || i} style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 10, padding: "8px 12px", borderRadius: 8,
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid rgba(255,255,255,0.06)",
+          }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text, #e8ecf7)" }}>
+                {s.title}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--muted, #8a94b0)" }}>
+                {s.source}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{
+                fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 6,
+                background: "rgba(106, 176, 224, 0.12)", color: "#6ab0e0",
+                whiteSpace: "nowrap",
+              }}>
+                {CATEGORY_TR[s.category] || s.category}
+              </span>
+              {typeof s.score === "number" && (
+                <span style={{
+                  fontSize: 11, fontWeight: 700, color: "#1ABC9C",
+                  fontVariantNumeric: "tabular-nums",
+                }} title="Anlamsal benzerlik skoru">
+                  {(s.score * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function MandateEditor({
   mandate,

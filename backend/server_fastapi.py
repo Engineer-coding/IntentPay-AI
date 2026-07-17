@@ -76,12 +76,10 @@ class ParseIntentRequest(APIRequest):
         description="User identifier used by the demo state.",
         examples=["user_demo_001"],
     )
-
-
-class ApproveMandateRequest(APIRequest):
-    mandate_id: str = Field(
-        description="Mandate identifier returned by /api/intent/parse.",
-        examples=["man_1234567890"],
+    company_id: str | None = Field(          # ← YENİ EKLENEN ALAN
+        default=None,
+        description="Company profile ID for RAG policy-aware parsing (optional).",
+        examples=["tekno_a"],
     )
 
 

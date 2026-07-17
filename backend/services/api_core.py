@@ -75,6 +75,7 @@ def persistence_stats() -> dict:
 def parse_intent(body: dict) -> dict:
     text = (body.get("text") or "").strip()
     user_id = body.get("user_id", DEFAULT_USER)
+    company_id = body.get("company_id")
 
     if not text:
         return {"error": "Talimat metni boş olamaz."}
@@ -99,7 +100,7 @@ def parse_intent(body: dict) -> dict:
             "error": "Manipülasyon denemesi tespit edildi. Talimat reddedildi; mandate oluşturulmadı.",
         }
 
-    result = parse_natural_intent(text, user_id)
+    result = parse_natural_intent(text, user_id, company_id=company_id)
     result["mandate"] = sanitize_mandate(result["mandate"], scan)
     result["security_scan"] = scan
 
