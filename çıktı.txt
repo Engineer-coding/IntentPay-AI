@@ -1,0 +1,26 @@
+======================================================================
+  IntentPay AI — RAG Canlı Demo
+======================================================================
+  OpenAI anahtarı: VAR (gerçek embedding)
+======================================================================
+
+  İndeks hazır: 8 doküman
+  Embedding modu: {'mock': 8}
+
+
+──────────────────────────────────────────────────────────────────────
+  SENARYO 1: Tekno A.Ş.
+──────────────────────────────────────────────────────────────────────
+  Talimat: "Bu ay için 25.000 TL'ye kadar ofis sandalyesi ve masa al, bir de birkaç laptop lazım"
+
+  Beklenti: Kullanıcı 25.000 istiyor ve laptop (elektronik) istiyor. Tekno A.Ş. politikası: tek işlem 10.000'i aşamaz, elektronik ek onay ister. RAG bunu yakalamalı.
+Traceback (most recent call last):
+  File "c:\Users\latif\OneDrive\Belgeler\GitHub\IntentPay AI\backend\rag_canli_demo.py", line 110, in <module>
+    main()
+  File "c:\Users\latif\OneDrive\Belgeler\GitHub\IntentPay AI\backend\rag_canli_demo.py", line 83, in main
+    result = retriever.retrieve(s["text"], company_id=s["company"])
+  File "c:\Users\latif\OneDrive\Belgeler\GitHub\IntentPay AI\backend\rag\retriever.py", line 128, in retrieve
+    hits = self.store.search(
+  File "c:\Users\latif\OneDrive\Belgeler\GitHub\IntentPay AI\backend\rag\embeddings.py", line 273, in search
+    scores = sub_normalized @ q  # (M,)
+ValueError: matmul: Input operand 1 has a mismatch in its core dimension 0, with gufunc signature (n?,k),(k,m?)->(n?,m?) (size 1536 is different from 256)

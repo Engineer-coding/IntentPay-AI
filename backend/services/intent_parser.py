@@ -1,6 +1,6 @@
 """
-IntentPay AI - Intent Parser (Hibrit LLM + Kural Fallback)
-==========================================================
+IntentPay AI - Intent Parser (Hibrit LLM + Kural Fallback + RAG)
+================================================================
 Kullanıcının doğal dilde yazdığı ödeme talimatını yapılandırılmış Mandate'e çevirir.
 
 GÜVENLİK PRENSİBİ: Bu katman ASLA nihai ödeme kararı vermez. Sadece doğal dili
@@ -10,6 +10,14 @@ kurallara çevirir. Çıktı kullanıcıya gösterilir ve onaylanmadan aktif olm
   - OPENAI_API_KEY ortam değişkeni varsa -> gerçek LLM ile parse (mode="llm")
   - yoksa                                -> deterministik kural tabanlı parse
   - LLM hata verirse                     -> deterministik kural fallback (mode="rule_fallback")
+
+RAG (Retrieval-Augmented Generation) - YENİ:
+  - company_id verilirse ve RAG modülü mevcutsa, LLM mandate'i oluştururken
+    o şirketin politika dokümanlarını ve regülasyon kurallarını da hesaba katar.
+  - LLM, "parser"dan "politika-farkında asistan"a yükselir.
+  - RAG OPSİYONELDİR: modül yoksa, company_id verilmezse veya RAG hata verirse
+    sistem TAMAMEN eskisi gibi çalışır. Mevcut davranış hiçbir durumda bozulmaz.
+  - RAG yalnızca LLM modunda devreye girer (kural parser'ı etkilemez).
 """
 from __future__ import annotations
 
@@ -19,6 +27,43 @@ import re
 import time
 
 from models.schema import Mandate, CATEGORIES, _id, now_ms
+
+# --------------------------------------------------------------------------- #
+#  RAG entegrasyonu (opsiyonel, güvenli import)
+# --------------------------------------------------------------------------- #
+# RAG modülü mevcut değilse veya import edilemezse, sistem RAG'sız çalışır.
+# Bu, "RAG opsiyonel zenginleştirme" prensibinin ilk katmanıdır.
+try:
+    from rag.retriever import get_retriever
+    _RAG_AVAILABLE = True
+except Exception:
+    _RAG_AVAILABLE = False
+
+
+def _get_policy_context(text: str, company_id: str | None) -> dict:
+    """
+    RAG ile şirket politika bağlamını getirir.
+
+    Dönüş: {"context_text": str, "sources": list} veya boş.
+    Hiçbir koşulda exception fırlatmaz — RAG başarısız olursa boş döner ve
+    LLM parser RAG'sız (eski gibi) devam eder.
+    """
+    if not _RAG_AVAILABLE or not company_id:
+        return {"context_text": "", "sources": []}
+    try:
+        retriever = get_retriever()
+        result = retriever.retrieve(text, company_id=company_id)
+        if result.get("used"):
+            return {
+                "context_text": result.get("context_text", ""),
+                "sources": result.get("sources", []),
+            }
+    except Exception as e:
+        # RAG hata verirse sessizce RAG'sız devam et (görünür log ile).
+        print(f"[intent_parser] RAG bağlamı alınamadı, RAG'sız devam: "
+              f"{type(e).__name__}: {e}")
+    return {"context_text": "", "sources": []}
+
 
 # Türkçe kategori anahtar kelimeleri -> kanonik kategori
 _CATEGORY_KEYWORDS = {
@@ -40,11 +85,34 @@ _DURATION_DAYS = {
 # --------------------------------------------------------------------------- #
 #  Public API
 # --------------------------------------------------------------------------- #
-def parse_intent(text: str, user_id: str) -> dict:
-    """Doğal dil -> mandate (dict). Hangi modun kullanıldığını da döner."""
+def parse_intent(text: str, user_id: str, company_id: str | None = None) -> dict:
+    """
+    Doğal dil -> mandate (dict). Hangi modun kullanıldığını da döner.
+
+    Parametreler:
+        text:       Kullanıcının doğal dil talimatı.
+        user_id:    Kullanıcı kimliği.
+        company_id: (YENİ, opsiyonel) Şirket profili kimliği. Verilirse ve RAG
+                    mevcutsa, LLM o şirketin politikalarını hesaba katar.
+                    Verilmezse sistem eskisi gibi çalışır (geriye tam uyumlu).
+
+    Dönüş:
+        {
+          "mandate": {...},
+          "parse_mode": "llm" | "llm_rag" | "rule" | "rule_fallback",
+          "policy_sources": [...]   # RAG kullanıldıysa hangi politikalar (arayüz için)
+        }
+    """
+    policy_sources: list = []
+
     if os.environ.get("OPENAI_API_KEY"):
         try:
-            mandate, mode = _parse_with_llm(text, user_id), "llm"
+            # RAG bağlamını getir (opsiyonel — company_id yoksa boş döner)
+            rag_ctx = _get_policy_context(text, company_id)
+            mandate = _parse_with_llm(text, user_id, rag_ctx.get("context_text", ""))
+            policy_sources = rag_ctx.get("sources", [])
+            # RAG gerçekten kullanıldıysa modu ayırt et
+            mode = "llm_rag" if policy_sources else "llm"
         except Exception as e:
             print(
                 "[intent_parser] LLM başarısız, kurala düşülüyor: "
@@ -54,7 +122,10 @@ def parse_intent(text: str, user_id: str) -> dict:
     else:
         mandate, mode = _parse_with_rules(text, user_id), "rule"
 
-    return {"mandate": mandate.to_dict(), "parse_mode": mode}
+    result = {"mandate": mandate.to_dict(), "parse_mode": mode}
+    # policy_sources her zaman döner (boş liste olsa da) — arayüz tutarlılığı için
+    result["policy_sources"] = policy_sources
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -186,18 +257,54 @@ Zorunlu JSON şeması:
 }"""
 
 
-def _parse_with_llm(text: str, user_id: str) -> Mandate:
+# RAG bağlamı varsa sistem prompt'una eklenecek talimat şablonu.
+# Bu, LLM'e "sadece kullanıcının cümlesini değil, şirket politikalarını da
+# hesaba kat" der — ama nihai kararı yine vermemesini vurgular.
+_RAG_INSTRUCTION = """
+
+ŞİRKET POLİTİKASI BAĞLAMI:
+Aşağıda, bu işlemi başlatan şirketin geçerli harcama politikaları ve tabi
+olduğu regülasyon kuralları verilmiştir. Mandate'i oluştururken kullanıcının
+talimatını bu politikalarla BİRLİKTE değerlendir:
+- Kullanıcının talebi politikadaki bir limitten yüksekse, politikadaki daha
+  kısıtlayıcı (düşük) limiti uygula.
+- Politika bir kategoriyi yasaklıyorsa veya ek onay gerektiriyorsa, bunu
+  mandate'e yansıt (blocked_categories veya requires_approval_for_new_merchant).
+- Politikada "onaylı satıcı" zorunluluğu varsa only_approved_merchants=true yap.
+- Çelişki durumunda her zaman daha güvenli ve daha kısıtlayıcı yorumu seç.
+
+{policy_context}
+
+Unutma: Sen yalnızca kuralları oluşturuyorsun; nihai ödeme kararını policy
+engine ve risk modeli verecek."""
+
+
+def _parse_with_llm(text: str, user_id: str, policy_context: str = "") -> Mandate:
+    """
+    LLM ile mandate üretir.
+
+    policy_context (YENİ): RAG'dan gelen şirket politika metni. Boş değilse,
+    sistem prompt'una eklenir ve LLM politika-farkında mandate üretir.
+    Boşsa, fonksiyon tamamen eskisi gibi çalışır (geriye uyumlu).
+    """
     import urllib.error
     import urllib.request
 
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+    # Sistem prompt'unu kur — RAG bağlamı varsa ekle
+    system_prompt = _LLM_SYSTEM
+    if policy_context:
+        system_prompt = _LLM_SYSTEM + _RAG_INSTRUCTION.format(
+            policy_context=policy_context
+        )
 
     payload = json.dumps({
         "model": model,
         "max_tokens": 500,
         "temperature": 0,
         "messages": [
-            {"role": "system", "content": _LLM_SYSTEM},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ],
     }).encode("utf-8")
