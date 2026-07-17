@@ -596,8 +596,32 @@ function App() {
                 : "dashboard-grid pre-agent-stage"
             }
           >          <section className="dash-cell intent-cell" id="new-intent">
-              <Panel eyebrow="Talimat" title="Talimatınızı Oluşturun"
+               <Panel eyebrow="Talimat" title="Talimatınızı Oluşturun"
                 sub="Doğal dilde ödeme talimatınızı yazın.">
+ 
+                {/* --- YENİ: Şirket profili seçici (RAG için) --- */}
+                <label className="fld">Şirket Profili</label>
+                <select
+                  className="fld-select"
+                  value={companyId}
+                  onChange={e => setCompanyId(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "10px 12px",
+                    marginBottom: 14,
+                    borderRadius: 10,
+                    background: "rgba(255,255,255,0.05)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    color: "var(--text, #e8ecf7)",
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="tekno_a">Tekno A.Ş. — Teknoloji</option>
+                  <option value="perakende_b">Perakende B — Perakende</option>
+                </select>
+                {/* --- şirket seçici sonu --- */}
+ 
                 <label className="fld">Kullanıcı Talimatı</label>
                 <textarea rows={5} value={intentText} onChange={e => setIntentText(e.target.value)}
                   placeholder="Örn: Bu hafta 5.000 TL'ye kadar ofis sandalyesi al..." />
