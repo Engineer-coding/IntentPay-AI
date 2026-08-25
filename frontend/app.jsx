@@ -249,7 +249,6 @@ function App() {
        });
       const parsed = d?.data || d;
 
-      console.log("parse response data:", parsed);
       setParseMode(parsed.parse_mode);
       setSecurityScan(parsed.security_scan || null);
       setLlmAvailable(parsed.parse_mode === "llm" || parsed.parse_mode === "llm_rag");
@@ -587,6 +586,17 @@ function App() {
       <div className="workspace">
         <TopBar llm={llmAvailable} persist={persist} />
         <main className="shell" id="overview">
+          <ProductIntro
+            running={demoRunning || running || parsing || approving}
+            onRunDemo={runGuidedFullDemo}
+            onStartManual={() => scrollToSection("new-intent", "Yeni Talimat")}
+          />
+          <OperationStatus
+            parsing={parsing}
+            approving={approving}
+            running={running}
+            demoRunning={demoRunning}
+          />
           <div id="intent-flow"><Stepper step={step} /></div>
 
           <div
@@ -605,17 +615,6 @@ function App() {
                   className="fld-select"
                   value={companyId}
                   onChange={e => setCompanyId(e.target.value)}
-                  style={{
-                    width: "100%",
-                    padding: "10px 12px",
-                    marginBottom: 14,
-                    borderRadius: 10,
-                    background: "rgba(255,255,255,0.05)",
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    color: "var(--text, #e8ecf7)",
-                    fontSize: 14,
-                    cursor: "pointer",
-                  }}
                 >
                   <option value="tekno_a">Tekno A.Ş. — Teknoloji</option>
                   <option value="perakende_b">Perakende B — Perakende</option>
@@ -671,7 +670,13 @@ function App() {
                 </Panel>
               ) : (
                 <Panel eyebrow="Yetkilendirme" title="Mandate Kuralları" sub="Talimat ayrıştırıldığında kurallar burada görünür.">
-                  <div className="empty-state"><span>2</span><p>Önce ödeme talimatını kurallara dönüştürün.</p></div>
+                  <div className="empty-state empty-state-premium mandate-empty">
+                    <span className="empty-icon">◇</span>
+                    <div>
+                      <b>Yetkilendirme kuralları bekleniyor</b>
+                      <p>Talimatınızı kurallara dönüştürdüğünüzde limitler, kategoriler ve satıcı politikası burada görünür.</p>
+                    </div>
+                  </div>
                 </Panel>
               )}
             </section>
@@ -695,7 +700,13 @@ function App() {
                 </Panel>
               ) : (
                 <Panel eyebrow="Ajan Simülasyonu" title="İşlem Senaryoları" sub="Aktif mandate sonrasında işlem senaryoları açılır.">
-                  <div className="empty-state"><span>3</span><p>Mandate onayını bekliyor.</p></div>
+                  <div className="empty-state empty-state-premium">
+                    <span className="empty-icon">⌁</span>
+                    <div>
+                      <b>Simülasyonlar henüz kilitli</b>
+                      <p>Yetkilendirme kurallarını onayladığınızda güvenli ajan senaryoları burada açılır.</p>
+                    </div>
+                  </div>
                 </Panel>
               )}
             </section>
@@ -707,7 +718,10 @@ function App() {
                   <><Pipeline state={pipeline} />{evalResult && <ResultView ev={evalResult} mandate={mandate} />}
                     {evalResult?.needs_stepup && <StepupDialog resolved={stepupResolved} onResolve={resolveStepup} />}</>
                 ) : (
-                  <div className="decision-placeholder"><div className="mini-gauge">0.00</div><div><b>Henüz karar yok</b><p>Bir ajan talebi çalıştırıldığında değerlendirme sonucu burada görünür.</p></div></div>
+                  <div className="decision-placeholder decision-empty">
+                    <div className="mini-gauge">—</div>
+                    <div><b>Karar motoru hazır</b><p>Bir işlem senaryosu çalıştırıldığında policy kontrolleri, risk skoru ve nihai karar burada gösterilir.</p></div>
+                  </div>
                 )}
               </Panel>
             </section>
@@ -726,12 +740,22 @@ function App() {
           <div className="trust-bar">
             <div><b>Güvende ve Kontrol Sizde</b><span>Tüm kararlar denetlenebilir ve açıklanabilirdir.</span></div>
             <div><b>Audit Trail</b><span>Aktif</span></div>
-            <div><b>Veri Şifreleme</b><span>AES-256</span></div>
-            <div><b>KVKK Uyumlu</b><span>Evet</span></div>
+            <div><b>İmzalı Tokenlar</b><span>HMAC</span></div>
+            <div><b>Karar Motoru</b><span>Deterministik</span></div>
             <div><b>Son Senkronizasyon</b><span>{new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}</span></div>
           </div>
 
-          <div className="foot">IntentPay AI · Hackathon MVP · Tüm ödeme işlemleri simülasyondur.</div>
+          <footer className="product-footer">
+            <div>
+              <strong>IntentPay AI</strong>
+              <span>Agentic Payment Authorization Platform</span>
+            </div>
+            <div className="footer-meta">
+              <span>Sandbox ortamı</span>
+              <span>v1.0</span>
+              <span>Gerçek ödeme verisi kullanılmaz</span>
+            </div>
+          </footer>
           <SecurityThreatModal
             scan={securityScan}
             open={threatModalOpen}
@@ -756,21 +780,15 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 function Sidebar({ active, onNavigate }) {
   const groups = [
     ["İş Akışı", [
-      { label: "Intent Akışı", key: "flow", icon: "↔", enabled: true },
-      { label: "Yeni Talimat", key: "new-intent", icon: "＋", enabled: true },
-      { label: "Taslaklar", icon: "▣", enabled: false },
+      { label: "Intent Akışı", key: "flow", icon: "↔" },
+      { label: "Yeni Talimat", key: "new-intent", icon: "＋" },
     ]],
     ["İşlemler", [
-      { label: "İşlemler", key: "transactions", icon: "◫", enabled: true },
-      { label: "Kartlar & Satıcılar", icon: "▤", enabled: false },
+      { label: "İşlemler", key: "transactions", icon: "◫" },
     ]],
     ["Görünürlük", [
-      { label: "Denetim Logu", key: "audit", icon: "▧", enabled: true },
-      { label: "Analitik", key: "analytics", icon: "◷", enabled: true },
-    ]],
-    ["Yönetim", [
-      { label: "Ayarlar", icon: "⚙", enabled: false },
-      { label: "Ekip & Roller", icon: "♙", enabled: false },
+      { label: "Denetim Logu", key: "audit", icon: "▧" },
+      { label: "Analitik", key: "analytics", icon: "◷" },
     ]],
   ];
 
@@ -788,9 +806,7 @@ function Sidebar({ active, onNavigate }) {
             <button
               className={`nav-item ${active === item.label ? "active" : ""}`}
               key={item.label}
-              disabled={!item.enabled}
-              title={item.enabled ? "" : "Bu bölüm henüz bağlı değil"}
-              onClick={() => item.enabled && onNavigate(item.key)}
+              onClick={() => onNavigate(item.key)}
             >
               <span>{item.icon}</span><span>{item.label}</span>
             </button>
@@ -817,15 +833,69 @@ function TopBar({ llm, persist }) {
   );
 }
 
-function Stepper({ step }) {
-  const steps = ["Niyet", "Kurallar", "Ajan", "Değerlendirme", "Karar", "Denetim"];
+function ProductIntro({ running, onRunDemo, onStartManual }) {
   return (
-    <div className="stepper">
-      {steps.map((s, i) => {
+    <section className="product-intro">
+      <div className="product-intro-copy">
+        <div className="product-kicker"><i /> Agentic payment authorization</div>
+        <h1>Ödeme ajanlarına sınır, görünürlük ve denetlenebilir kararlar.</h1>
+        <p>Doğal dildeki talimatı kurallara dönüştürün; policy ve risk motoruyla değerlendirin, imzalı karar kaydıyla sonucu izleyin.</p>
+      </div>
+      <div className="product-intro-actions">
+        <button className="btn btn-primary demo-cta" onClick={onRunDemo} disabled={running}>
+          {running ? <><span className="spin"></span> Demo çalışıyor</> : <>▶ 90 saniyelik demoyu çalıştır</>}
+        </button>
+        <button className="btn btn-ghost" onClick={onStartManual}>Manuel akışla devam et</button>
+        <small>Tüm işlemler güvenli bir sandbox içinde simüle edilir.</small>
+      </div>
+    </section>
+  );
+}
+
+function OperationStatus({ parsing, approving, running, demoRunning }) {
+  const state = demoRunning
+    ? { label: "Otomatik demo yürütülüyor", detail: "Talimat, mandate, senaryolar ve audit zinciri sırayla hazırlanıyor.", steps: ["Talimat", "Mandate", "Karar"] }
+    : parsing
+      ? { label: "Talimat analiz ediliyor", detail: "Limitler, kategoriler ve satıcı kuralları çıkarılıyor.", steps: ["Dil analizi", "Kural çıkarımı", "Mandate"] }
+      : approving
+        ? { label: "Mandate etkinleştiriliyor", detail: "Onaylanan kurallar ajan yetkilendirme katmanına aktarılıyor.", steps: ["Doğrulama", "Onay", "Etkinleştirme"] }
+        : running
+          ? { label: "İşlem değerlendiriliyor", detail: "Policy kontrolleri, risk motoru ve karar imzası çalışıyor.", steps: ["Policy", "Risk", "İmza"] }
+          : null;
+
+  if (!state) return null;
+
+  return (
+    <section className="operation-status" role="status" aria-live="polite">
+      <div className="operation-spinner"><span /></div>
+      <div className="operation-copy">
+        <b>{state.label}</b>
+        <span>{state.detail}</span>
+      </div>
+      <div className="operation-stages">
+        {state.steps.map((item, index) => <span key={item} className={index === 0 ? "active" : ""}>{item}</span>)}
+      </div>
+    </section>
+  );
+}
+
+function Stepper({ step }) {
+  const steps = [
+    { label: "Talimat", hint: "Doğal dil" },
+    { label: "Mandate", hint: "Kurallar" },
+    { label: "Ajan", hint: "Talep" },
+    { label: "Policy", hint: "Kontrol" },
+    { label: "Karar", hint: "Risk" },
+    { label: "Audit", hint: "Kanıt" },
+  ];
+  return (
+    <div className="stepper" aria-label="Yetkilendirme akışı">
+      {steps.map((item, i) => {
         const n = i + 1;
         const cls = n < step ? "done" : n === step ? "active" : "";
-        return <div key={s} className={"step " + cls}>
-          <span className="n">{n < step ? "✓" : n}</span>{s}
+        return <div key={item.label} className={"step " + cls}>
+          <span className="n">{n < step ? "✓" : n}</span>
+          <span className="step-copy"><b>{item.label}</b><small>{item.hint}</small></span>
         </div>;
       })}
     </div>
@@ -2075,8 +2145,8 @@ function AuditView({ id, items, raw, onRefresh }) {
   return (
     <div id={id}>
       <div className="section-gap" />
-      <Panel eyebrow="Adım 6 · Denetim" title="Audit Log — Açıklanabilir Karar Zinciri"
-        sub="Her işlem için AI ajan talebi, policy kontrolü, risk skoru, nihai karar ve token/step-up kayıtları izlenebilir.">
+      <Panel eyebrow="Adım 6 · Denetim" title="Karar Kanıtları ve Audit Trail"
+        sub="Her işlem talebini, uygulanan kuralları, risk skorunu ve nihai karar kanıtını uçtan uca izleyin.">
         <div className="audit-toolbar">
           <div className="btn-row" style={{ marginTop: 0 }}>
             <button className="btn btn-ghost" onClick={() => onRefresh({ scroll: false })}>↻ Yenile</button>
@@ -2145,7 +2215,8 @@ function AuditView({ id, items, raw, onRefresh }) {
 
                   <div className="ax">
                     <div className="axt">
-                      {tx.merchant || "Satıcı yok"} · {fmtTL(tx.amount || 0)}
+                      <span>{tx.merchant || "Satıcı yok"} · {fmtTL(tx.amount || 0)}</span>
+                      <time>{formatEventTime(it.timestamp)}</time>
                     </div>
                     <div className="axe">
                       {CAT_TR[tx.category] || tx.category || "Kategori yok"} ·
@@ -2155,6 +2226,7 @@ function AuditView({ id, items, raw, onRefresh }) {
                   </div>
 
                   <div className="audit-mini">
+                    <span className="verified">✓ Zincir doğrulandı</span>
                     <span>{(policy.failed || []).length} ihlal</span>
                     <span>{(policy.warnings || []).length} uyarı</span>
                   </div>
@@ -2175,6 +2247,17 @@ function AuditView({ id, items, raw, onRefresh }) {
       </Panel>
     </div>
   );
+}
+
+function formatEventTime(timestamp) {
+  if (!timestamp) return "Zaman bilgisi yok";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Zaman bilgisi yok";
+  return date.toLocaleTimeString("tr-TR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 const AUDIT_ICONS = {
@@ -2228,9 +2311,10 @@ function AuditChain({ events }) {
                   <span>{meta.desc}</span>
                 </div>
 
-                <em>
-                  {event.event_type.replaceAll("_", " ")}
-                </em>
+                <div className="chain-meta">
+                  <time>{formatEventTime(event.timestamp)}</time>
+                  <em>{event.event_type.replaceAll("_", " ")}</em>
+                </div>
               </header>
 
               <AuditDetail e={event} />

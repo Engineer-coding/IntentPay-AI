@@ -81,7 +81,12 @@ class ParseIntentRequest(APIRequest):
         description="Company profile ID for RAG policy-aware parsing (optional).",
         examples=["tekno_a"],
     )
-
+    
+class ApproveMandateRequest(APIRequest):
+    mandate_id: str = Field(
+        description="Mandate identifier returned by /api/intent/parse.",
+        examples=["man_1234567890"],
+    )
 
 class UpdateMandateRequest(APIRequest):
     mandate_id: str = Field(
